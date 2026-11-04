@@ -1,3 +1,4 @@
+import { API_URL } from "../api";
 //ekranda görünen ile dbde kullanılan arasında baglantı kurmak için
 export const URUN_GORUNEN_ADLAR = {
   "BIBER SIVRI": "Biber (Sivri)",
@@ -19,7 +20,7 @@ export const URUN_GORUNEN_ADLAR = {
 
 export const URUNLER = Object.keys(URUN_GORUNEN_ADLAR);
 export async function aktifUrunleriGetir() {
-  const res = await fetch("http://localhost:8000/urun/liste");
+  const res = await fetch(`${API_URL}/urun/liste`);
   const data = await res.json();
 
   return data

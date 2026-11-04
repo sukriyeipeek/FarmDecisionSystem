@@ -1,12 +1,10 @@
 -- Başlangıç verisi: ilçeler ve ürünler.
--- Tablolar backend ilk kez başlatıldığında SQLAlchemy tarafından oluşturulur;
--- bu dosyayı ondan sonra çalıştırın. Ardından kota tablosunu doldurmak için:
+-- Önce python -m alembic upgrade head ile tabloları oluşturun;
+-- bu dosyayı seçili veritabanında yalnızca bir kez çalıştırın. Ardından kota için:
 --   python -m app.scripts.insert_kota
 --
 -- Ürün adları data/processed/data_files altındaki veri setleriyle birebir aynı
 -- olmalıdır (ör. BROKOLI, BROKOLİ değil): fiyat ve risk hesapları bu adlarla eşleşir.
-
-USE tarim_karar_analiz;
 
 INSERT INTO ilce (ilce_adi) VALUES
     ('Bayındır'),

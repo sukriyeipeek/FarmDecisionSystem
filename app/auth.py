@@ -26,7 +26,10 @@ def _secret_al() -> str:
 
 
 def _sure_dakika() -> int:
-    return int(os.getenv("JWT_EXPIRE_MINUTES", "480"))
+    minutes = int(os.getenv("JWT_EXPIRE_MINUTES", "480"))
+    if not 1 <= minutes <= 1440:
+        raise ValueError("JWT_EXPIRE_MINUTES 1 ile 1440 arasında olmalıdır.")
+    return minutes
 
 
 def token_olustur(kullanici_id: int) -> str:
@@ -41,9 +44,15 @@ def token_olustur(kullanici_id: int) -> str:
 
 def token_coz(token: str) -> int:
     try:
-        payload = jwt.decode(token, _secret_al(), algorithms=[ALGORITHM])
-        return int(payload["sub"])
-    except (jwt.PyJWTError, KeyError, ValueError):
+        payload = jwt.decode(
+            token, _secret_al(), algorithms=[ALGORITHM],
+            options={"require": ["sub", "iat", "exp"]},
+        )
+        subject = payload["sub"]
+        if not isinstance(subject, str) or not subject.isascii() or not subject.isdecimal() or int(subject) <= 0:
+            raise ValueError("Geçersiz kullanıcı kimliği.")
+        return int(subject)
+    except (jwt.PyJWTError, KeyError, ValueError, TypeError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Oturum geçersiz veya süresi dolmuş. Lütfen tekrar giriş yapın.",

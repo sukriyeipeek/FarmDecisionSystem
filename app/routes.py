@@ -1,3 +1,5 @@
+import math
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, session
 from passlib.context import CryptContext
@@ -421,6 +423,9 @@ def optimize_ekim_planı(veri:schemas.OptimizationTarlaRequest,db: Session=Depen
         strateji=veri.strateji,
         gecmis_verimler=veri.gecmis_verimler,
         ek_maliyet_donum=veri.ek_maliyet_donum,
+        su_butcesi_m3=veri.su_butcesi_m3,
+        sulama_yontemi=veri.sulama_yontemi,
+        optimizasyon_modu=veri.optimizasyon_modu,
     )
 
     return plan
@@ -449,73 +454,100 @@ def manuel_optimized(veri:schemas.OptimizationManuelRequest,db: Session=Depends(
         strateji=veri.strateji,
         gecmis_verimler=veri.gecmis_verimler,
         ek_maliyet_donum=veri.ek_maliyet_donum,
+        su_butcesi_m3=veri.su_butcesi_m3,
+        sulama_yontemi=veri.sulama_yontemi,
+        optimizasyon_modu=veri.optimizasyon_modu,
     )
     return plan
 
 @router.post("/oneri/onayla")
 def oneri_onayla(veri: schemas.OnerıOnaylaRequest, db: Session=Depends(get_db),
                  aktif: models.Kullanici=Depends(mevcut_kullanici)):
-    tarla=db.query(models.Tarla).filter(models.Tarla.tarla_id==veri.tarla_id,
-                                        models.Tarla.kullanici_id==aktif.kullanici_id).first()
-    if not tarla:
-        raise HTTPException(status_code=404,detail="tarla bulunamadu.")
-    if not veri.urunler:
-        raise HTTPException(status_code=404,detail="urunler bulunamadı")
+    try:
+        if not veri.urunler:
+            raise HTTPException(status_code=400, detail="En az bir ürün gereklidir")
 
-    bos_urun=db.query(models.Urun).filter(models.Urun.urun_adi == "Boş").first()
-    if not bos_urun:
-        raise HTTPException(status_code=404,detail="Boş ürün sistemde tanımlı degil")
+        urun_adlari = [satir.urun_adi for satir in veri.urunler]
+        if len(urun_adlari) != len(set(urun_adlari)):
+            raise HTTPException(status_code=400, detail="Aynı ürün birden fazla kez gönderilemez")
 
-    bos_kayit =db.query(models.TarlaUrun).filter(models.TarlaUrun.tarla_id == veri.tarla_id,
-                                                models.TarlaUrun.urun_id == bos_urun.urun_id).first()
+        tarla = (db.query(models.Tarla)
+                 .filter(models.Tarla.tarla_id == veri.tarla_id,
+                         models.Tarla.kullanici_id == aktif.kullanici_id)
+                 .with_for_update().first())
+        if not tarla:
+            raise HTTPException(status_code=404, detail="Tarla bulunamadı")
 
-    toplam_ekilecek=sum(u.donum for u in veri.urunler)
+        bos_urun = db.query(models.Urun).filter(models.Urun.urun_adi == "Boş").first()
+        if not bos_urun:
+            raise HTTPException(status_code=409, detail="Boş ürün sistemde tanımlı değil")
 
-    if bos_kayit:
-        bos_kayit.donum= round(bos_kayit.donum-toplam_ekilecek,2)
+        bos_kayit = (db.query(models.TarlaUrun)
+                     .filter(models.TarlaUrun.tarla_id == veri.tarla_id,
+                             models.TarlaUrun.urun_id == bos_urun.urun_id)
+                     .with_for_update().first())
+        mevcut_bos = float(bos_kayit.donum) if bos_kayit else 0.0
+        if not math.isfinite(mevcut_bos) or mevcut_bos < 0:
+            raise HTTPException(status_code=409, detail="Tarlanın boş alanı geçersiz")
 
-    for satir in veri.urunler:
-        urun_kaydi=db.query(models.Urun).filter(models.Urun.urun_adi == satir.urun_adi).first()
-        if not urun_kaydi:
-            continue
+        toplam_ekilecek = math.fsum(float(satir.donum) for satir in veri.urunler)
+        if not math.isfinite(toplam_ekilecek) or toplam_ekilecek > mevcut_bos + 1e-8:
+            raise HTTPException(status_code=409, detail="İstenen alan tarladaki boş alanı aşıyor")
+        toplam_ekilecek = min(toplam_ekilecek, mevcut_bos)
 
-        mevcut=db.query(models.TarlaUrun).filter(models.TarlaUrun.tarla_id==veri.tarla_id,
-                                                 models.TarlaUrun.urun_id==urun_kaydi.urun_id).first()
-        if mevcut:
-            mevcut.donum=round(mevcut.donum+satir.donum,2)
-        else:
-            db.add(models.TarlaUrun(tarla_id=veri.tarla_id,urun_id=urun_kaydi.urun_id,donum=satir.donum))
+        urun_kayitlari = []
+        for satir in veri.urunler:
+            urun = (db.query(models.Urun)
+                    .filter(models.Urun.urun_adi == satir.urun_adi)
+                    .with_for_update().first())
+            if not urun or not urun.aktif or urun.urun_adi == "Boş":
+                raise HTTPException(status_code=400, detail=f"Ürün aktif değil veya bulunamadı: {satir.urun_adi}")
+            urun_kayitlari.append((satir, urun))
 
-        kota_kaydi=db.query(models.Kota).filter(models.Kota.ilce_id==tarla.ilce_id,
-                                                models.Kota.urun_id==urun_kaydi.urun_id).first()
-        if  kota_kaydi:
-           kota_kaydi.kullanilan_kota=(kota_kaydi.kullanilan_kota or 0) + satir.donum
+        yeni_paket = models.OneriPaketi(
+            kullanici_id=aktif.kullanici_id,
+            tarla_id=veri.tarla_id,
+            # Client value is only an auditable snapshot; authoritative recalculation remains TODO.
+            hesaplanan_toplam_kar=veri.hesaplanan_toplam_kar,
+            kabul_edildi_mi=True,
+        )
+        db.add(yeni_paket)
+        if bos_kayit:
+            bos_kayit.donum = max(0.0, round(mevcut_bos - toplam_ekilecek, 2))
 
-    yeni_paket=models.OneriPaketi(
-        kullanici_id=aktif.kullanici_id,
-        tarla_id=veri.tarla_id,
-        hesaplanan_toplam_kar=veri.hesaplanan_toplam_kar,
-        kabul_edildi_mi=True
-    )
-    db.add(yeni_paket)
-    db.commit()
-    db.refresh(yeni_paket)
+        for satir, urun in urun_kayitlari:
+            mevcut = (db.query(models.TarlaUrun)
+                      .filter(models.TarlaUrun.tarla_id == veri.tarla_id,
+                              models.TarlaUrun.urun_id == urun.urun_id)
+                      .with_for_update().first())
+            if mevcut:
+                mevcut.donum = round(float(mevcut.donum) + satir.donum, 2)
+            else:
+                db.add(models.TarlaUrun(tarla_id=veri.tarla_id, urun_id=urun.urun_id, donum=satir.donum))
 
-    for satir in veri.urunler:
-        urun_kaydi =db.query(models.Urun).filter(models.Urun.urun_adi==satir.urun_adi).first()
-        if not urun_kaydi:
-            continue
-        db.add(models.EkimKaydi(
-            paket_id=yeni_paket.paket_id,
-            urun_id=urun_kaydi.urun_id,
-            ekilen_donum=satir.donum,
-            durum=models.DurumEnum.aktif
-        ))
-    db.commit()
-    return {
-        "mesaj": "Ekim planı onaylandı ve tarlana işlendi",
-        "paket_id": yeni_paket.paket_id,
-    }
+            kota = (db.query(models.Kota)
+                    .filter(models.Kota.ilce_id == tarla.ilce_id, models.Kota.urun_id == urun.urun_id)
+                    .with_for_update().first())
+            if kota:
+                kota.kullanilan_kota = (kota.kullanilan_kota or 0) + satir.donum
+
+        db.flush()
+        for satir, urun in urun_kayitlari:
+            db.add(models.EkimKaydi(
+                paket_id=yeni_paket.paket_id,
+                urun_id=urun.urun_id,
+                ekilen_donum=satir.donum,
+                durum=models.DurumEnum.aktif,
+            ))
+        paket_id = yeni_paket.paket_id
+        db.commit()
+        return {"mesaj": "Ekim planı onaylandı ve tarlana işlendi", "paket_id": paket_id}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Ekim planı onaylanamadı; değişiklik yapılmadı")
 
 @router.get("/istatistikler/hal-fiyatlari")
 def get_daily_hal_prices():

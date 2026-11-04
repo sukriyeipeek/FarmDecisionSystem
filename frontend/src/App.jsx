@@ -1,11 +1,12 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import Navbar from "./components/Navbar";
+import Navbar from "./components/navbar";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
 import PriceAnalysis from "./pages/PriceAnalysis";
 import ProfitAnalysis from "./pages/ProfitAnalysis";
 import RiskAnalysis from "./pages/RiskAnalysis";
 import Recommendations from "./pages/Recommendations";
+import Irrigation from "./pages/Irrigation";
 import Profile from "./pages/Profile";
 import Farms from "./pages/Farms";
 import "./App.css";
@@ -74,6 +75,14 @@ function App() {
           element={
             <Layout>
               <Recommendations />
+            </Layout>
+          }
+        />
+        <Route
+          path="/sulama"
+          element={
+            <Layout>
+              <Irrigation />
             </Layout>
           }
         />

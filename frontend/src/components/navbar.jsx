@@ -41,6 +41,11 @@ function Navbar() {
         <Link to="/oneriler" className={isActive("/oneriler")}>
           Öneri Sistemi
         </Link>
+        {aktifKullanici && (
+          <Link to="/sulama" className={isActive("/sulama")}>
+            Sulama Tahmini
+          </Link>
+        )}
 
         <div className="nav-auth">
           {aktifKullanici ? (

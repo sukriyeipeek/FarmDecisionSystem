@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
-import { authFetch } from "../api";
+import { API_URL, authFetch } from "../api";
 
-const API_URL = "http://127.0.0.1:8000";
+
 
 function Admin() {
   const [kullanicilar, setKullanicilar] = useState([]);

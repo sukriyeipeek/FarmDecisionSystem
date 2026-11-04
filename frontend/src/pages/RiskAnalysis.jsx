@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import "../App.css";
 import { aktifUrunleriGetir, URUN_GORUNEN_ADLAR } from "../constants/urunler";
-import { authFetch } from "../api";
+import { API_URL, authFetch } from "../api";
 
 const ILCELER = ["Bayındır","Bergama","Menderes","Tire","Torbalı","Ödemiş"];
 const SEZONLAR = ["İlkbahar", "Yaz", "Sonbahar", "Kış"];
@@ -41,7 +41,7 @@ function RiskAnalysis() {
     setYukleniyor(true);
     setSonuc(null);
     try {
-      const res = await authFetch("http://localhost:8000/tahmin/risk", {
+      const res = await authFetch(`${API_URL}/tahmin/risk`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...form, kullanici_id: kullanici.id }),

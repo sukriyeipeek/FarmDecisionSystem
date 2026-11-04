@@ -1,5 +1,22 @@
 # Tarımsal Karar Destek Sistemi
 
+## SuAkıl geliştirme paketi
+
+Öneri ekranı artık su bütçesi (m³), sulama yöntemi ve su tasarruflu planlama
+seçeneklerini destekler. Aynı girdilerle iki planı karşılaştırabilir, toplam su
+tahmini ve su başına kârı görebilirsiniz. Su miktarları kaynaklı yaklaşık
+planlama değerleridir; yerel ölçüm ve gerçekleşmiş tasarruf değildir.
+
+- [Su hesabı ve kaynaklar](docs/water-model.md)
+- [Hava tabanlı sulama API'si ve çevrimdışı senaryo](docs/irrigation.md)
+- [Veritabanı migration ve mevcut kurulum geçişi](docs/database.md)
+- [Docker Compose ile kurulum](docs/deployment.md)
+- [Geliştirme yol haritası](docs/roadmap.md)
+
+Tüm frontend API çağrıları `VITE_API_URL` kullanır (yerelde varsayılan
+`http://localhost:8000`, Compose içinde `/api`). Ortam değişkeni build sırasında
+uygulanır. API şemaları ve yeni su uç noktaları `/docs` adresindedir.
+
 ![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
@@ -234,7 +251,7 @@ JWT_SECRET=<en az 32 karakterlik rastgele anahtar>
 ```
 
 Anahtar üretmek için: `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
-`JWT_SECRET` tanımlı değilse veya kısaysa giriş yapılamaz. Eski `sifre=` değişkeni geçici olarak hâlâ okunur, ancak kullanımdan kalkmıştır.
+`JWT_SECRET` en az 32 karakter olmalıdır. `DATABASE_URL` zorunludur; eski `sifre=` değişkeni artık okunmaz. Oturum süresi 1–1440 dakika aralığında olmalıdır.
 
 ### Veritabanı
 
@@ -242,7 +259,14 @@ Anahtar üretmek için: `python -c "import secrets; print(secrets.token_urlsafe(
 CREATE DATABASE tarim_karar_analiz CHARACTER SET utf8mb4;
 ```
 
-Tablolar backend ilk kez çalıştırıldığında otomatik olarak oluşturulur. Ardından başlangıç verilerini yükleyin:
+Yeni ve boş veritabanında tabloları önce migration ile oluşturun. Mevcut kurulum
+için [geçiş talimatını](docs/database.md) izleyin; eski şemaya doğrudan stamp uygulamayın.
+
+```bash
+python -m alembic upgrade head
+```
+
+Ardından başlangıç verilerini bir kez yükleyin:
 
 ```bash
 mysql -u root -p tarim_karar_analiz < database_seed.sql

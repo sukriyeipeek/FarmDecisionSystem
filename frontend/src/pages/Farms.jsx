@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../App.css";
 import { URUNLER, URUN_GORUNEN_ADLAR } from "../constants/urunler";
-import { authFetch } from "../api";
+import { API_URL, authFetch } from "../api";
 
 function Farms() {
   const navigate = useNavigate();
@@ -36,10 +36,10 @@ function Farms() {
     setYukleniyor(true);
     setHata("");
     try {
-      const ilceRes = await authFetch("http://localhost:8000/ilce/liste");
+      const ilceRes = await authFetch(`${API_URL}/ilce/liste`);
       setIlceler(await ilceRes.json());
 
-      const urunRes = await authFetch("http://localhost:8000/urun/liste");
+      const urunRes = await authFetch(`${API_URL}/urun/liste`);
       setUrunler(await urunRes.json());
 
       await tarlalariGetir(kullaniciId);
@@ -51,7 +51,7 @@ function Farms() {
   };
 
   const tarlalariGetir = async (kullaniciId) => {
-    const res = await authFetch(`http://localhost:8000/tarla/liste`);
+    const res = await authFetch(`${API_URL}/tarla/liste`);
     const data = await res.json();
     setTarlalar(data);
   };
@@ -93,7 +93,7 @@ function Farms() {
     }
 
     try {
-      const res = await authFetch("http://localhost:8000/tarla/ekle", {
+      const res = await authFetch(`${API_URL}/tarla/ekle`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -121,7 +121,7 @@ function Farms() {
   const tarlaSil = async (tarlaId) => {
     if (!window.confirm("Bu tarlayı silmek istediğine emin misin?")) return;
     try {
-      const res = await authFetch(`http://localhost:8000/tarla/sil/${tarlaId}`, { method: "DELETE" });
+      const res = await authFetch(`${API_URL}/tarla/sil/${tarlaId}`, { method: "DELETE" });
       if (res.ok) {
         tarlalariGetir(kullanici.id);
       } else {
