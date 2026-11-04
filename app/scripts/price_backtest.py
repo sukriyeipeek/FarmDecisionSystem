@@ -9,9 +9,10 @@ an improvement if it beats them:
   B1  last year's price for the same season
   B2  B1 grown by inflation (the model's own starting point)
 
-All methods use the recorded inflation of the target season. In the app that value
-comes from the inflation forecast, so real errors are somewhat larger; the
-comparison between methods is still fair.
+By default all methods use the recorded inflation of the target season, which
+isolates the price model. With inflation_source="forecast" they use the inflation
+forecast made at the origin instead, as the app does; that end-to-end error is
+what the price intervals (app/scripts/price_intervals.py) are built from.
 
 Run from the project root:  python -m app.scripts.price_backtest
 """
@@ -19,6 +20,7 @@ Run from the project root:  python -m app.scripts.price_backtest
 import numpy as np
 import pandas as pd
 
+from app.services.inflation_service import forecast_from_history, load_raw_inflation_data
 from app.services.price_prediction import (
     build_training_frame,
     expected_log_growth,
@@ -42,7 +44,18 @@ HORIZON = 4
 METHODS = ["B1_last_year", "B2_last_year_x_inflation", "model"]
 
 
-def run_backtest() -> pd.DataFrame:
+def forecast_inflation_at(origin: int, horizon: int = HORIZON) -> dict[int, float]:
+    """Inflation forecast for the seasons after `origin`, using only data up to it."""
+    raw = load_raw_inflation_data()
+    periods = [to_period(year, season) for year, season in zip(raw["year"], raw["season"])]
+    history = raw[[period <= origin for period in periods]]
+    return {to_period(year, season): value for year, season, value in forecast_from_history(history, horizon)}
+
+
+def run_backtest(inflation_source: str = "actual") -> pd.DataFrame:
+    if inflation_source not in ("actual", "forecast"):
+        raise ValueError("inflation_source 'actual' veya 'forecast' olmali.")
+
     prices = get_prices()
     inflation = get_actual_inflation()
     products = sorted({product for product, _ in prices})
@@ -50,28 +63,30 @@ def run_backtest() -> pd.DataFrame:
     records = []
     for origin in ORIGINS:
         model = fit_price_model(*build_training_frame(prices, inflation, last_period=origin))
+        target_inflation = inflation if inflation_source == "actual" else forecast_inflation_at(origin)
 
         for product in products:
             for target in range(origin + 1, origin + HORIZON + 1):
                 actual = prices.get((product, target))
                 base = find_base_period(prices, product, target, last_known_period=origin)
-                if actual is None or base is None or target not in inflation:
+                if actual is None or base is None or target not in inflation or target not in target_inflation:
                     continue
 
                 base_period, years_back = base
                 base_price = prices[(product, base_period)]
                 predicted, _ = forecast_price(
-                    model, product, base_price, from_period(target)[1], years_back, inflation[target]
+                    model, product, base_price, from_period(target)[1], years_back, target_inflation[target]
                 )
                 records.append(
                     {
                         "origin": origin,
                         "product": product,
                         "target": target,
+                        "horizon": target - origin,
                         "actual": actual,
                         "B1_last_year": base_price,
                         "B2_last_year_x_inflation": base_price
-                        * np.exp(expected_log_growth(years_back, inflation[target])),
+                        * np.exp(expected_log_growth(years_back, target_inflation[target])),
                         "model": predicted,
                     }
                 )
@@ -110,7 +125,11 @@ def main():
     print(by_origin.to_string(), "\n")
 
     print("MAPE % by product")
-    print(mape_by(results, "product").to_string())
+    print(mape_by(results, "product").to_string(), "\n")
+
+    end_to_end = run_backtest(inflation_source="forecast")
+    print("End-to-end (inflation forecast instead of recorded inflation, as in the app)")
+    print(error_summary(end_to_end).to_string())
 
 
 if __name__ == "__main__":

@@ -65,6 +65,7 @@ function Login() {
           localStorage.setItem(
             "kullanici",
             JSON.stringify({
+              token: data.access_token,
               id: data.kullanici_id,
               ad: data.ad_soyad,
               email: form.email,

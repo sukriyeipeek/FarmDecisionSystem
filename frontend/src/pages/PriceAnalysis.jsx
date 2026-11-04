@@ -3,6 +3,7 @@ import "../App.css";
 import { URUN_GORUNEN_ADLAR } from "../constants/urunler";
 import { PRODUCT_IMAGES } from "../constants/productImages";
 import ProductSelect from "../components/ProductSelect";
+import { authFetch } from "../api";
 
 const SEZONLAR = ["İlkbahar", "Yaz", "Sonbahar", "Kış"];
 
@@ -28,7 +29,7 @@ function PriceAnalysis() {
     setSonuc(null);
 
     try {
-      const res = await fetch("http://localhost:8000/tahmin/fiyat", {
+      const res = await authFetch("http://localhost:8000/tahmin/fiyat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),

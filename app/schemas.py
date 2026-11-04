@@ -1,6 +1,10 @@
 from pydantic import BaseModel, EmailStr, ConfigDict, Field
-from typing import Optional
+from typing import Annotated, Literal, Optional
 from datetime import datetime
+
+# Ciftcinin beyan ettigi gecmis verim (ton/donum); 30 ustu girdi hatasi kabul edilir.
+GecmisVerim = Annotated[float, Field(gt=0, le=30)]
+Strateji = Literal["dengeli", "temkinli"]
 
 # Kullanıcı şemalrı ( kayıt ve giriş yapmak için)
 
@@ -25,7 +29,6 @@ class KullaniciLogin(BaseModel):
 
 class KullaniciUpdate(BaseModel):
 
-    kullanici_id:int
     ad_soyad:str
     yas:int | None=None
     cinsiyet:str | None=None
@@ -45,7 +48,6 @@ class TarlaUrunCreate(BaseModel):
 
 
 class TarlaCreate(BaseModel):
-    kullanici_id: int
     tarla_adi: str
     ilce_id: int
 
@@ -56,7 +58,6 @@ class RiskTahminRequest(BaseModel):
     urun: str
     donum: float = Field(..., gt=0)
     sezon: str
-    kullanici_id:int
 
 class RiskLogResponse(BaseModel):
     log_id: int
@@ -79,7 +80,6 @@ class RiskLogResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class KarHesabiRequest(BaseModel):
-    kullanici_id: int
     ilce: str
     urun: str
     donum: float = Field(..., gt=0)
@@ -87,30 +87,37 @@ class KarHesabiRequest(BaseModel):
     sulama_maliyeti: float | None = None
     iscilik_maliyeti: float | None = None
     tohum_maliyeti: float | None = None
+    gecmis_verimler: list[GecmisVerim] | None = Field(default=None, max_length=10)
 
 class FiyatTahminRequest(BaseModel):
     sezon: str
     urun : str
 
 class OptimizationTarlaRequest(BaseModel):
-    kullanici_id : int
     sezon: str
     tarla_id:int
     bos_donum: float
     secilen_urunler: Optional[list[str]] = None
+    strateji: Strateji = "dengeli"
+    gecmis_verimler: dict[str, list[GecmisVerim]] | None = None
+    # iscilik, tohum, sulama, kira gibi gubre ve mazot disindaki giderler (TL/donum)
+    ek_maliyet_donum: float = Field(default=0, ge=0)
 
 class OptimizationManuelRequest(BaseModel):
     ilce_adi: str
     donum:float
     sezon : str
     secilen_urunler:Optional[list[str]] = None
+    strateji: Strateji = "dengeli"
+    gecmis_verimler: dict[str, list[GecmisVerim]] | None = None
+    # iscilik, tohum, sulama, kira gibi gubre ve mazot disindaki giderler (TL/donum)
+    ek_maliyet_donum: float = Field(default=0, ge=0)
 
 class OneriOnaylaUrun(BaseModel):
     urun_adi:str
     donum:float
 
 class OnerıOnaylaRequest(BaseModel):
-    kullanici_id: int
     tarla_id:int
     hesaplanan_toplam_kar:float
     urunler: list[OneriOnaylaUrun]

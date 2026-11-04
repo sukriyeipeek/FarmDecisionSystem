@@ -1,4 +1,5 @@
 from pathlib import Path
+import logging
 import re
 from datetime import date
 
@@ -7,6 +8,9 @@ import pulp
 
 from app.services.profit_service import kar_hesaplama_son
 from app.services.risk import risk_hesapla
+from app.services.product_catalog import URUN_MEVSIMLERI
+
+logger = logging.getLogger(__name__)
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -17,24 +21,15 @@ QUOTAPATH = ROOT_DIR / "data" / "processed" / "data_files" / "cleaned_quota.csv"
 PROFIT_WEIGHT = 0.70
 RISK_WEIGHT = 0.30
 
-PRODUCT_SEASONS = {
-    "DOMATES SALKIM": ["Spring"],
-    "SALATALIK SILOR": ["Spring", "Summer"],
-    "BEZELYE": ["Fall", "Winter"],
-    "BAKLA": ["Fall", "Winter"],
-    "KARNABAHAR": ["Summer", "Fall"],
-    "LAHANA KIRMIZI": ["Summer", "Fall"],
-    "LAHANA BEYAZ": ["Summer", "Fall"],
-    "BROKOLI": ["Summer", "Fall"],
-    "MARUL GOBEKLI": ["Fall", "Winter", "Spring"],
-    "ISPANAK": ["Fall", "Winter"],
-    "PIRASA": ["Spring", "Summer"],
-    "BIBER SIVRI": ["Spring"],
-    "KARPUZ": ["Spring"],
-    "SOGAN KURU": ["Fall", "Spring"],
-    "KABAK TAZE": ["Spring", "Summer"],
-    "PATLICAN UZUN": ["Spring"],
+# Hangi kar degeri puanlanir: "dengeli" beklenen kari, "temkinli" fiyat araliginin alt
+# ucundaki (kotu senaryo) kari kullanir. Temkinli plan, fiyati cokse de en az zarar eden
+# urunlere yonelir.
+STRATEJILER = {
+    "dengeli": "profit_per_decare",
+    "temkinli": "profit_low_per_decare",
 }
+
+PRODUCT_SEASONS = URUN_MEVSIMLERI
 
 EN_TO_TR_SEASON = {
     "Spring": "İlkbahar",
@@ -130,7 +125,7 @@ def filter_selected_products(data, selected_products):
     return data[data["product_name"].isin(selected_products)].reset_index(drop=True)
 
 
-def add_profit(db, product_name, district, target_season, area):
+def add_profit(db, product_name, district, target_season, area, gecmis_verimler=None, ek_maliyet_donum=0):
     profit_season = EN_TO_TR_SEASON.get(target_season, target_season)
 
     return kar_hesaplama_son(
@@ -139,6 +134,8 @@ def add_profit(db, product_name, district, target_season, area):
         urun=product_name,
         sezon=profit_season,
         donum=area,
+        gecmis_verimler=(gecmis_verimler or {}).get(product_name),
+        donum_basi_ek_maliyet=ek_maliyet_donum or 0,
     )
 
 
@@ -154,7 +151,7 @@ def add_risk(db, product_name, district, season, area):
     )
 
 
-def build_profit_data(db, suitable_products, district, season):
+def build_profit_data(db, suitable_products, district, season, gecmis_verimler=None, ek_maliyet_donum=0):
     product_rows = (
         suitable_products[["district", "product_name", "quota"]]
         .drop_duplicates(subset=["district", "product_name"])
@@ -172,11 +169,14 @@ def build_profit_data(db, suitable_products, district, season):
                 district=district,
                 target_season=season,
                 area=1,
+                gecmis_verimler=gecmis_verimler,
+                ek_maliyet_donum=ek_maliyet_donum,
             )
         except Exception as error:
-            print(
-                f"Kar hesabi basarisiz oldu: "
-                f"district={district}, product={product_name}, season={season}, error={error}"
+            logger.warning(
+                "Kar hesabi basarisiz oldu, urun planin disinda birakildi: "
+                "district=%s product=%s season=%s error=%s",
+                district, product_name, season, error,
             )
             continue
 
@@ -186,6 +186,11 @@ def build_profit_data(db, suitable_products, district, season):
                 "product_name": product_name,
                 "quota": row.get("quota"),
                 "profit_per_decare": float(profit_result["net_kar"]),
+                # aralik yoksa temkinli strateji beklenen kara geri duser
+                "profit_low_per_decare": float(
+                    profit_result["net_kar"] if profit_result["net_kar_dusuk"] is None
+                    else profit_result["net_kar_dusuk"]
+                ),
                 "revenue_per_decare": float(profit_result["tahmini_gelir"]),
                 "cost_per_decare": float(profit_result["toplam_gider"]),
                 "predicted_price": float(profit_result["tahmini_fiyat"]),
@@ -210,9 +215,10 @@ def build_risk_data(db, profit_data, district, season):
                 area=1,
             )
         except Exception as error:
-            print(
-                f"Risk hesabi basarisiz oldu: "
-                f"district={district}, product={product_name}, season={season}, error={error}"
+            logger.warning(
+                "Risk hesabi basarisiz oldu, urun planin disinda birakildi: "
+                "district=%s product=%s season=%s error=%s",
+                district, product_name, season, error,
             )
             continue
 
@@ -229,17 +235,21 @@ def build_risk_data(db, profit_data, district, season):
     return pd.DataFrame(risk_rows)
 
 
-def add_final_score(data):
-    data = data.copy()
+def add_final_score(data, strateji="dengeli"):
+    if strateji not in STRATEJILER:
+        raise ValueError(f"Gecersiz strateji: {strateji}")
 
-    min_profit = data["profit_per_decare"].min()
-    max_profit = data["profit_per_decare"].max()
+    data = data.copy()
+    profit_column = STRATEJILER[strateji]
+
+    min_profit = data[profit_column].min()
+    max_profit = data[profit_column].max()
 
     if max_profit == min_profit:
         data["profit_score"] = 100
     else:
         data["profit_score"] = (
-            (data["profit_per_decare"] - min_profit)
+            (data[profit_column] - min_profit)
             / (max_profit - min_profit)
             * 100
         )
@@ -253,12 +263,15 @@ def add_final_score(data):
     return data
 
 
-def build_decision_data(db, suitable_products, district, season):
+def build_decision_data(db, suitable_products, district, season, strateji="dengeli", gecmis_verimler=None,
+                        ek_maliyet_donum=0):
     profit_data = build_profit_data(
         db=db,
         suitable_products=suitable_products,
         district=district,
         season=season,
+        gecmis_verimler=gecmis_verimler,
+        ek_maliyet_donum=ek_maliyet_donum,
     )
 
     if profit_data.empty:
@@ -283,7 +296,14 @@ def build_decision_data(db, suitable_products, district, season):
     if data.empty:
         raise ValueError("Kar ve risk hesabi ortak olan urun bulunamadi.")
 
-    return add_final_score(data)
+    return add_final_score(data, strateji=strateji)
+
+
+def drop_unprofitable(decision_data):
+    """Beklenen kari sifir ya da negatif olan urune alan ayrilmaz; o alanin bos kalmasi daha iyidir.
+    Skor (0-100) her zaman pozitif oldugu icin bu filtre olmadan model araziyi zarar eden
+    urunlerle de doldururdu."""
+    return decision_data[decision_data["profit_per_decare"] > 0].reset_index(drop=True)
 
 
 def create_planting(
@@ -293,6 +313,9 @@ def create_planting(
     total_area,
     selected_products=None,
     max_share=0.4,
+    strateji="dengeli",
+    gecmis_verimler=None,
+    ek_maliyet_donum=0,
 ):
     target_year = get_target_year(season)
 
@@ -308,7 +331,17 @@ def create_planting(
         suitable_products=suitable_products,
         district=district,
         season=season,
+        strateji=strateji,
+        gecmis_verimler=gecmis_verimler,
+        ek_maliyet_donum=ek_maliyet_donum,
     )
+
+    decision_data = drop_unprofitable(decision_data)
+    if decision_data.empty:
+        raise ValueError(
+            "Bu koşullarda beklenen kârı pozitif olan ürün yok. "
+            "Alanı boş bırakmak ya da girilen giderleri gözden geçirmek önerilir."
+        )
 
     model = pulp.LpProblem("optimal_ekim_plani", pulp.LpMaximize)
 
@@ -364,6 +397,8 @@ def create_planting(
             district=district,
             target_season=season,
             area=planted_area,
+            gecmis_verimler=gecmis_verimler,
+            ek_maliyet_donum=ek_maliyet_donum,
         )
         risk_result = add_risk(
             db=db,
@@ -388,6 +423,15 @@ def create_planting(
                 "fuel_cost": round(float(profit_result["mazot_gideri"]), 2),
                 "estimated_cost": round(float(profit_result["toplam_gider"]), 2),
                 "estimated_profit": round(float(profit_result["net_kar"]), 2),
+                "estimated_profit_low": profit_result["net_kar_dusuk"],
+                "estimated_profit_high": profit_result["net_kar_yuksek"],
+                "breakeven_price": profit_result["basabas_fiyati"],
+                "loss_probability": profit_result["zarar_olasiligi"],
+                "interval_coverage": profit_result["aralik_isabeti"],
+                "own_yield_weight": profit_result["kendi_verim_agirligi"],
+                "assumptions": profit_result["varsayimlar"],
+                "costs_incomplete": profit_result["maliyetler_eksik"],
+                "strategy": strateji,
                 "profit_per_decare": round(float(row["profit_per_decare"]), 2),
                 "profit_score": round(float(row["profit_score"]), 2),
                 "risk_score": round(float(risk_result["genel_risk"]), 2),
@@ -409,6 +453,9 @@ def create_plan_for_user_fields(
     fields,
     season,
     selected_products=None,
+    strateji="dengeli",
+    gecmis_verimler=None,
+    ek_maliyet_donum=0,
 ):
     all_plans = []
     target_year = get_target_year(season)
@@ -425,6 +472,9 @@ def create_plan_for_user_fields(
                 season=season,
                 total_area=total_area,
                 selected_products=selected_products,
+                strateji=strateji,
+                gecmis_verimler=gecmis_verimler,
+                ek_maliyet_donum=ek_maliyet_donum,
             )
 
             all_plans.append(
@@ -433,7 +483,10 @@ def create_plan_for_user_fields(
                     "district": district,
                     "total_area": total_area,
                     "target_year": target_year,
+                    "strategy": strateji,
                     "success": True,
+                    # kota ve karlilik kisitlari yuzunden ekilmesi onerilmeyen alan
+                    "unallocated_area": round(total_area - sum(row["recommended_area"] for row in plan), 2),
                     "plan": plan,
                 }
             )

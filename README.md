@@ -19,8 +19,9 @@ Projenin amacı yalnızca en yüksek gelir potansiyeline sahip ürünü önermek
 | --- | --- |
 | Fiyat tahmini | Ürün ve sezon bazında gelecek dönem hal fiyatı (TL/kg) |
 | Risk analizi | Arz fazlası, fiyat oynaklığı ve girdi maliyeti risklerini birleştiren 0–100 arası skor |
-| Kârlılık analizi | Tahmini verim, üretim, gelir, gübre ve mazot giderleri ile net kâr |
-| Ekim optimizasyonu | Kâr ve güvenliği birlikte gözeten, kota ve çeşitlendirme kısıtlı ekim planı |
+| Kârlılık analizi | Tahmini verim, üretim, gelir, gübre ve mazot giderleri ile net kâr; çiftçinin kendi geçmiş verimi isteğe bağlı |
+| Belirsizlik | Ölçülmüş hata payına dayanan fiyat ve kâr aralığı, başabaş fiyatı ve zarar olasılığı |
+| Ekim optimizasyonu | Kâr ve güvenliği birlikte gözeten, kota ve çeşitlendirme kısıtlı ekim planı; "dengeli" ve "temkinli" yaklaşım |
 | Tarla yönetimi | Tarla ekleme, ekili ürünler ve onaylanan planın tarlaya işlenmesi |
 | Hal fiyatları | Günlük İzmir hal fiyatları; kaynak erişilemezse ulusal ortalama veya son kayıtlı fiyatlar |
 | Yönetim paneli | Kullanıcı yetkilendirme ve ürünlerin aktif/pasif yapılması |
@@ -85,7 +86,31 @@ Tahmin, hedef sezonla aynı mevsimdeki en son fiyattan başlar ve beklenen enfla
 fiyat = taban fiyat × exp( yıl farkı × ln(1 + enflasyon) + model düzeltmesi )
 ```
 
-Fiyatlar 2014–2026 arasında yaklaşık 35 kat arttığından, model doğrudan fiyat seviyesini değil enflasyonun açıklayamadığı değişimi öğrenir. Bu sayede ağaç tabanlı modellerin eğitimde görmediği fiyat seviyelerine ulaşamama sorunu ortadan kalkar. Enflasyon ve mazot tahminleri ayrı Ridge regresyon modellerinden gelir.
+Fiyatlar 2014–2026 arasında yaklaşık 35 kat arttığından, model doğrudan fiyat seviyesini değil enflasyonun açıklayamadığı değişimi öğrenir. Bu sayede ağaç tabanlı modellerin eğitimde görmediği fiyat seviyelerine ulaşamama sorunu ortadan kalkar. Mazot tahmini Ridge regresyonundan gelir.
+
+Enflasyon tahmini, Ridge modelinin tahmini ile son gözlenen enflasyonun ortalamasıdır. Zaman serisi testinde model tek başına "enflasyon olduğu yerde kalır" varsayımından daha kötü çıkmış, ikisinin ortalaması en düşük hatayı vermiştir (bkz. Model Değerlendirmesi).
+
+### Belirsizlik
+
+Tek bir fiyat tahmini, %30 civarındaki hata payını gizler. Bu nedenle her tahminle birlikte bir aralık verilir. Aralık, modelin zaman serisi testindeki gerçek hatalarından hesaplanır:
+
+```text
+hata          = ln(gerçek fiyat / tahmin)              her ürün ve tahmin ufku (1–4 sezon) için
+aralık        = tahmin × exp(hataların %2,5 ve %97,5 yüzdelikleri)
+ürüne özel    = w × ürünün yüzdelikleri + (1 − w) × ufkun yüzdelikleri,   w = n / (n + 15)
+```
+
+Fiyatı daha oynak ürünlerin (örneğin lahana) aralığı daha geniş, istikrarlı ürünlerinki (örneğin brokoli) daha dardır. Aralığın gerçekte ne kadar tuttuğu, her seferinde bir tahmin başlangıcı dışarıda bırakılarak ölçülür. Nominal %95'lik aralık, görülmemiş yıllarda gerçek fiyatı **%76** oranında kapsamıştır; uygulama bu ölçülmüş oranı gösterir. Fiyat rejimi yıldan yıla değiştiği için geçmiş hatalar geleceği olduğundan dar gösterir; daha dar bir %80'lik aralık yalnızca %62 kapsadığı için kullanılmamıştır.
+
+Aralıktan türetilen göstergeler:
+
+| Gösterge | Tanım |
+| --- | --- |
+| Kâr aralığı | Aralığın alt ve üst fiyatıyla hesaplanan net kâr |
+| Başabaş fiyatı | Giderleri tam karşılayan satış fiyatı (TL/kg) |
+| Zarar olasılığı | Geçmiş hatalar bugünkü tahmine uygulandığında fiyatın başabaşın altında kalma oranı; yalnızca fiyat belirsizliğini kapsar |
+
+Aralıkları yeniden üretmek için: `python -m app.scripts.price_intervals` (sonuç `models/price_intervals.json`).
 
 ### Risk analizi
 
@@ -110,7 +135,15 @@ gider             = gübre + mazot (+ isteğe bağlı sulama, işçilik ve tohum
 net kâr           = gelir − gider
 ```
 
-Gübre ihtiyacı, Tarım ve Orman Bakanlığı'nın ürün bazındaki azot ve fosfor değerlerinden hesaplanır.
+Gübre ihtiyacı, Tarım ve Orman Bakanlığı'nın ürün bazındaki azot ve fosfor değerlerinden hesaplanır. Ürün sabitleri `app/services/product_catalog.py` dosyasında tek yerde tutulur. Ölçülmüş değer yerine yaklaşık değer kullanılan kalemler (şu an domates dışındaki ürünlerin mazot tüketimi) yanıtta `varsayimlar` olarak listelenir; tamamı `GET /urun/varsayimlar` adresindedir.
+
+Çiftçi kendi geçmiş verimlerini girerse ilçe ortalamasıyla birleştirilir (kredibilite ağırlıklandırması):
+
+```text
+verim = w × kendi ortalaması + (1 − w) × ilçe verimi,     w = n / (n + 2),  n = girilen yıl sayısı
+```
+
+Tek yıllık beyan ilçe değerini 1/3, beş yıllık kayıt 5/7 oranında etkiler; tek bir iyi ya da kötü yıl planı tek başına belirlemez.
 
 ### Ekim optimizasyonu
 
@@ -127,7 +160,16 @@ kısıtlar       Σ xᵢ ≤ boş alan
 skorᵢ = 0.7 × kâr skoruᵢ + 0.3 × (100 − riskᵢ)
 ```
 
-Yalnızca hedef mevsimde ekilebilen ürünler aday olarak değerlendirilir.
+Yalnızca hedef mevsimde ekilebilen ve beklenen kârı pozitif olan ürünler aday olarak değerlendirilir. Kârlı ürün kalmayan alan, zarar eden bir ürünle doldurulmak yerine "boş bırakılması önerilen alan" olarak raporlanır.
+
+Kâr skoru iki şekilde hesaplanabilir:
+
+| Yaklaşım | Kâr skoru neye göre | Ne zaman |
+| --- | --- | --- |
+| Dengeli (varsayılan) | Beklenen kâr | Ortalama getiriyi en yükseğe çıkarmak |
+| Temkinli | Fiyat aralığının alt ucundaki kâr | Kötü bir sezonda zararı sınırlamak |
+
+Örnek (Bayındır, yaz, 100 dönüm): temkinli plan fiyatı çok oynak kırmızı lahana yerine pırasa seçer; beklenen kâr %0,7 düşer, kötü senaryodaki kâr %2,5 artar. Tüm ilçe ve sezonlarda iki yaklaşım yaklaşık her on senaryodan birinde farklı plan önerir. Öneri ekranındaki "diğer giderler (TL/dönüm)" alanı girilmezse kâr yüksek, zarar olasılığı düşük görünür.
 
 ## Model Değerlendirmesi
 
@@ -142,10 +184,30 @@ Fiyat modeli, gerçek kullanımı taklit eden **kayan başlangıçlı zaman seri
 
 İlk model rastgele veri bölmesiyle ölçüldüğünde R² 0.95 gösteriyordu; ancak zaman serisinde bu yöntem gelecekteki verinin eğitime sızmasına yol açar. Zamana göre yapılan test, ilk modelin fiyatları sistematik olarak yaklaşık %30 düşük tahmin ettiğini ortaya koymuş ve mevcut yapıya geçişi belirlemiştir.
 
-Testi yeniden çalıştırmak için:
+Bu tablo hedef sezonun gerçekleşen enflasyonunu kullanır, yani yalnızca fiyat modelini ölçer. Uygulamada enflasyon da tahmin edildiği için, aynı test tahmini enflasyonla da yapılmıştır (uçtan uca):
+
+| Yöntem | MAPE | Sapma |
+| --- | --- | --- |
+| Geçen yılın aynı mevsim fiyatı | %38.6 | −%40.2 |
+| Geçen yıl × tahmini enflasyon | %30.6 | −%11.9 |
+| **Mevcut model** | **%33.2** | **−%6.5** |
+
+Mevcut model sistematik sapmada daha iyi, ortalama mutlak hatada ise "geçen yıl × enflasyon" yönteminden biraz geride; bu fark modelin ileride sadeleştirilip sadeleştirilmeyeceği değerlendirilirken dikkate alınmalıdır.
+
+Enflasyon tahmini de aynı yöntemle (2019'dan itibaren 28 başlangıç, 1–4 sezon ileri) test edilmiştir. Hata yıllık enflasyon puanıdır:
+
+| Yöntem | Ortalama mutlak hata |
+| --- | --- |
+| Ridge modeli | 16.5 puan |
+| Enflasyon olduğu yerde kalır | 14.3 puan |
+| **İkisinin ortalaması (uygulamada kullanılan)** | **14.3 puan** |
+
+Testleri yeniden çalıştırmak için:
 
 ```bash
 python -m app.scripts.price_backtest
+python -m app.scripts.inflation_backtest
+python -m app.scripts.price_intervals
 ```
 
 ## Kurulum
@@ -164,11 +226,15 @@ py -3.11 -m venv .venv
 pip install -r requirements.txt
 ```
 
-Proje kök dizininde bir `.env` dosyası oluşturun:
+Proje kök dizininde `.env.example` dosyasını `.env` olarak kopyalayıp doldurun:
 
 ```text
-sifre=<MySQL şifresi>
+DATABASE_URL=mysql+pymysql://<kullanıcı>:<şifre>@localhost:3306/tarim_karar_analiz
+JWT_SECRET=<en az 32 karakterlik rastgele anahtar>
 ```
+
+Anahtar üretmek için: `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+`JWT_SECRET` tanımlı değilse veya kısaysa giriş yapılamaz. Eski `sifre=` değişkeni geçici olarak hâlâ okunur, ancak kullanımdan kalkmıştır.
 
 ### Veritabanı
 
@@ -214,7 +280,9 @@ app/
 ├── routes.py         API uç noktaları
 ├── models.py         Veritabanı modelleri
 ├── schemas.py        İstek ve yanıt şemaları
+├── auth.py           JWT üretimi ve yetki bağımlılıkları
 ├── services/         Fiyat, risk, kâr, optimizasyon ve veri servisleri
+│   └── product_catalog.py  Ürün adı, mevsim, gübre ve mazot sabitleri (tek kaynak)
 └── scripts/          Model eğitimi, veri yükleme ve backtest betikleri
 data/
 ├── raw_data/         Ham veriler
@@ -227,7 +295,7 @@ database_seed.sql     İlçe ve ürün başlangıç verileri
 
 ## API
 
-Başlıca uç noktalar aşağıdadır; tam liste `/docs` adresindedir.
+Başlıca uç noktalar aşağıdadır; tam liste `/docs` adresindedir. `/kullanici/giris` bir `access_token` döndürür; kimlik doğrulaması gerektiren uç noktalar `Authorization: Bearer <token>` başlığı bekler ve kullanıcıyı token'dan belirler (istekte `kullanici_id` gönderilmez). `/admin/*` uç noktaları yalnızca yönetici hesaplara açıktır.
 
 | Metot | Uç nokta | Açıklama |
 | --- | --- | --- |
@@ -249,9 +317,11 @@ Testler veritabanı veya internet bağlantısı gerektirmez.
 
 ## Bilinen Kısıtlar ve Yol Haritası
 
-- **Kimlik doğrulama:** Uygulama şu an yerel kullanım içindir. Yayına alınmadan önce JWT tabanlı oturum yönetimi eklenmelidir.
-- **Maliyet kalemleri:** Varsayılan kâr hesabı yalnızca gübre ve mazot giderlerini içerir. İşçilik, tohum ve sulama için bölgesel varsayılanlar eklenmesi planlanmaktadır.
-- **Enflasyon tahmini:** Fiyat tahmini enflasyon tahminine doğrudan bağlıdır. Enflasyon modelinin de zaman serisi testiyle değerlendirilmesi planlanmaktadır.
+- **Kimlik doğrulama:** JWT ile oturum yönetimi vardır; ancak refresh token, parola sıfırlama ve giriş denemesi sınırı henüz yoktur. Token tarayıcıda `localStorage`'da tutulur; yayına alırken HttpOnly çerez değerlendirilmelidir.
+- **Maliyet kalemleri:** Varsayılan kâr hesabı yalnızca gübre ve mazot giderlerini içerir; işçilik, tohum, sulama ve kira kullanıcı tarafından girilir. Bu kalemler girilmezse zarar olasılığı olduğundan düşük görünür. Kaynaklı bölgesel varsayılanlar (örneğin TEPGE ürün maliyet çalışmaları) eklenmelidir.
+- **Ekim ve hasat mevsimi:** Fiyat, ürünün ekildiği mevsim için tahmin edilir. Ekimden aylar sonra hasat edilen ürünlerde (örneğin yazın ekilip sonbaharda hasat edilen brokoli), satış fiyatı hasat mevsiminden alınmalıdır. Ürün kataloğuna hasat mevsimi eklenmesi planlanmaktadır.
+- **Belirsizlik aralığı:** Yalnızca beş tahmin başlangıcından türetildiği için yaklaşıktır ve görülmemiş yıllarda %76 kapsamıştır. Verim ve maliyet belirsizliği henüz aralığa dahil değildir.
+- **Mazot tüketimi:** Yalnızca domates için ölçülmüş değer vardır; diğer ürünlerde bu değer kullanılır ve kullanıcıya varsayım olarak gösterilir.
 - **Dış veri kaynakları:** Güncel hal ve gübre fiyatları web kaynaklarından alınır. Hal fiyatları için yedek kaynaklar mevcuttur.
 
 ## Ekip

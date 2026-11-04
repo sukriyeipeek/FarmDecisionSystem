@@ -18,6 +18,12 @@ MODEL_PATH = KOK_DIZIN / "models" / "inflation_model.pkl"
 
 TARGET_COLUMN = "annual_inflation"
 
+# Uygulamadaki enflasyon tahmini = (1 - w) x model + w x son gozlenen enflasyon.
+# Zaman serisi testinde (python -m app.scripts.inflation_backtest) Ridge modeli tek basina
+# "enflasyon oldugu yerde kalir" tahmininden daha kotu cikti; ikisinin ortalamasi ise en dusuk
+# hatayi verdi. Model tahminleri zincirde ham haliyle ilerler, karma yalnizca ciktiya uygulanir.
+NAIVE_WEIGHT = 0.5
+
 SEASON_ORDER = {
     "Winter": 0,
     "Spring": 1,
@@ -230,6 +236,43 @@ def make_prediction_row(history: pd.DataFrame, year: int, season: str) -> pd.Dat
     )
 
 
+def blend_with_naive(model_value: float, last_observed: float, naive_weight: float = NAIVE_WEIGHT) -> float:
+    return (1 - naive_weight) * model_value + naive_weight * last_observed
+
+
+def forecast_from_history(
+    history: pd.DataFrame,
+    steps: int,
+    alpha: float = 1.0,
+    naive_weight: float = NAIVE_WEIGHT,
+) -> list[tuple[int, str, float]]:
+    """Modeli yalnizca `history` ile egitir ve sonraki `steps` sezonu uygulamadaki gibi
+    zincirleme (her tahmin bir sonrakinin girdisi olacak sekilde) tahmin eder.
+    naive_weight=0 ham model tahminini verir."""
+    history = history[["year", "season", TARGET_COLUMN, "season_order"]].reset_index(drop=True).copy()
+    last_observed = float(history[TARGET_COLUMN].iloc[-1])
+    train = add_time_features(history)
+
+    pipeline = build_pipeline(alpha=alpha)
+    pipeline.fit(train[FEATURE_COLUMNS], train[TARGET_COLUMN])
+
+    year, season = int(history.iloc[-1]["year"]), str(history.iloc[-1]["season"])
+    forecasts = []
+    for _ in range(steps):
+        year, season = get_next_period(year, season)
+        sample = make_prediction_row(history, year, season)
+        value = float(pipeline.predict(sample[FEATURE_COLUMNS])[0])
+        forecasts.append((year, season, blend_with_naive(value, last_observed, naive_weight)))
+        history.loc[len(history)] = {
+            "year": year,
+            "season": season,
+            TARGET_COLUMN: value,
+            "season_order": SEASON_ORDER[season],
+        }
+
+    return forecasts
+
+
 def predict_inflation_series(
     target_year_or_season: int | str,
     target_season: str | None = None,
@@ -265,6 +308,7 @@ def predict_inflation_series(
             periods.append((current_year, current_season))
 
     predictions = []
+    last_observed = float(history[TARGET_COLUMN].iloc[-1])
 
     for prediction_year, prediction_season in periods:
         sample = make_prediction_row(history, prediction_year, prediction_season)
@@ -273,7 +317,7 @@ def predict_inflation_series(
         predictions.append({
             "year": int(prediction_year),
             "season": prediction_season,
-            "annual_inflation": round(predicted_inflation, 2),
+            "annual_inflation": round(blend_with_naive(predicted_inflation, last_observed), 2),
         })
 
         history.loc[len(history)] = {

@@ -1,61 +1,29 @@
+import logging
 from pathlib import Path
+
+import numpy as np
 import pandas as pd
 
 from app import models
-from app.services.price_prediction import predict_product_price
+from app.services.price_prediction import get_price_intervals, predict_product_price
 from app.services.fuel_service import predict_fuel_price
 from app.services.fertilizer_service import get_commodity_price
 from app.services.risk import hedef_yil_belirle, sezon_cevir
+from app.services.product_catalog import GUBRE_RECETESI, MAZOT_TUKETIMI_LITRE_DONUM, varsayimlar_al
+
+logger = logging.getLogger(__name__)
 
 # Bu dosyanin bulundugu yerden proje kokune cikip data klasorune iniyoruz
 KOK_DIZIN = Path(__file__).resolve().parent.parent.parent
 URETIM_TAHMIN_PATH = KOK_DIZIN / "data" / "processed" / "data_files" / "üretim_miktari_sonuclari.csv"
 
-#orman bakanlıgı pdfe göre
-GUBRE_RECETESI = {
-    "DOMATES SALKIM": {"azot_kg": 14, "fosfor_kg": 10},
-    "BIBER SIVRI":      {"azot_kg": 14, "fosfor_kg": 10},
-    "SALATALIK SILOR":   {"azot_kg": 14, "fosfor_kg": 10},
-    "KABAK TAZE":      {"azot_kg": 14, "fosfor_kg": 10},
-    "PATLICAN UZUN":           {"azot_kg": 14, "fosfor_kg": 10},
-    "SOGAN KURU":       {"azot_kg": 13, "fosfor_kg": 9},
-    "KARPUZ":             {"azot_kg": 15, "fosfor_kg": 9},
-    "BAKLA": {"azot_kg": 15, "fosfor_kg": 9},
-    "BEZELYE": {"azot_kg": 15, "fosfor_kg": 9},
-    "BROKOLI": {"azot_kg": 15, "fosfor_kg": 9},
-    "ISPANAK": {"azot_kg": 15, "fosfor_kg": 9},
-    "KARNABAHAR": {"azot_kg": 15, "fosfor_kg": 9},
-    "LAHANA BEYAZ": {"azot_kg": 15, "fosfor_kg": 9},
-    "LAHANA KIRMIZI": {"azot_kg": 15, "fosfor_kg": 9},
-    "MARUL":{"azot_kg": 15, "fosfor_kg": 9},
-    "PIRASA": {"azot_kg": 15, "fosfor_kg": 9},
-}
+# Urun bazli sabitler (gubre recetesi vb.) product_catalog.py'de tutulur.
 
 # Saf maddeyi gercek gubre urunune cevirmek icin carpanlar (PDF'ten)
 # Ornek: 14 kg saf azot lazimsa, Ure gubresi olarak 14 x 2.2 = 30.8 kg Ure almamiz lazim
 UREYE_CEVIRME_CARPANI = 2.2
 DAP_A_CEVIRME_CARPANI = 2.2
 
-
-# Sadece Domates icin net veri var, digerleri icin ayni oran kullanildi (yaklasik)
-MAZOT_TUKETIMI_LITRE_DONUM = {
-    "DOMATES SALKIM": 16.98,
-    "BIBER SIVRI":      16.98,
-    "SALATALIK SILOR":   16.98,
-    "KABAK TAZE":      16.98,
-    "PATLICAN UZUN":           16.98,
-    "SOGAN KURU":       16.98,
-    "KARPUZ":             16.98,
-    "BAKLA":             16.98,
-    "BEZELYE":             16.98,
-    "BROKOLI":             16.98,
-    "ISPANAK":             16.98,
-    "KARNABAHAR":             16.98,
-    "LAHANA BEYAZ":             16.98,
-    "LAHANA KIRMIZI":             16.98,
-    "MARUL":             16.98,
-    "PIRASA":             16.98,
-}
 
 def uretim_tahmin_haritasi_olustur():
     df = pd.read_csv(URETIM_TAHMIN_PATH)
@@ -83,9 +51,8 @@ def verim_orani_hesapla(ilce_id, urun_id, ilce_adi, urun_adi_csv, db):
 
     anahtar = (ilce_adi, urun_adi_csv)
     tahmini_uretim = URETIM_TAHMIN_HARITASI.get(anahtar)
-    print("Anahtar:", anahtar)
-    print("Tahmini üretim:", tahmini_uretim)
-    print("Maksimum kota:", kota_kaydi.maksimum_kota)
+    logger.debug("verim: anahtar=%s tahmini_uretim=%s maksimum_kota=%s",
+                 anahtar, tahmini_uretim, kota_kaydi.maksimum_kota)
 
     if tahmini_uretim is None or tahmini_uretim <= 0:
         raise ValueError("Bu ilce/urun icin tahmini uretim verisi bulunamadi.")
@@ -140,7 +107,7 @@ def mazot_gideri_hesapla(urun, donum, mazot_fiyati_litre_basi):
 
 
 def tahmini_gider_hesapla(urun, donum, gubre_fiyati_ton_basi, mazot_fiyati_litre_basi,
-                           sulama_maliyeti, iscilik_maliyeti, tohum_maliyeti):
+                           sulama_maliyeti, iscilik_maliyeti, tohum_maliyeti, donum_basi_ek_maliyet=0):
     gubre_gideri = gubre_gideri_hesapla(urun, donum, gubre_fiyati_ton_basi)
     mazot_gideri = mazot_gideri_hesapla(urun, donum, mazot_fiyati_litre_basi)
 
@@ -152,6 +119,9 @@ def tahmini_gider_hesapla(urun, donum, gubre_fiyati_ton_basi, mazot_fiyati_litre
         ek_giderler = ek_giderler + iscilik_maliyeti
     if tohum_maliyeti:
         ek_giderler = ek_giderler + tohum_maliyeti
+    # plan onerisinde ciftcinin girdigi donum basi diger giderler (iscilik, tohum, sulama, kira...)
+    if donum_basi_ek_maliyet:
+        ek_giderler = ek_giderler + donum_basi_ek_maliyet * donum
 
     toplam_gider = gubre_gideri + mazot_gideri + ek_giderler
 
@@ -164,15 +134,57 @@ def tahmini_gider_hesapla(urun, donum, gubre_fiyati_ton_basi, mazot_fiyati_litre
 
 
 def net_kar_hesapla(tahmini_gelir, toplam_gider):
-    return round(tahmini_gelir - toplam_gider, 2)
+    return round(float(tahmini_gelir - toplam_gider), 2)
+
+# Ciftcinin kendi gecmis verimi n yillik ise agirligi n / (n + KREDIBILITE_K) olur (kredibilite
+# agirliklandirmasi): tek yillik beyan ilce ortalamasini 1/3 oraninda, bes yillik kayit 5/7
+# oraninda etkiler. Boylece tek bir iyi ya da kotu yil plani tek basina belirlemez.
+KREDIBILITE_K = 2
+
+
+def verim_birlestir(ilce_verimi, gecmis_verimler=None):
+    if not gecmis_verimler:
+        return {
+            "verim": ilce_verimi,
+            "ilce_verimi": ilce_verimi,
+            "kendi_verim_ortalamasi": None,
+            "kendi_verim_agirligi": 0.0,
+        }
+
+    n = len(gecmis_verimler)
+    agirlik = n / (n + KREDIBILITE_K)
+    ortalama = sum(gecmis_verimler) / n
+    return {
+        "verim": agirlik * ortalama + (1 - agirlik) * ilce_verimi,
+        "ilce_verimi": ilce_verimi,
+        "kendi_verim_ortalamasi": ortalama,
+        "kendi_verim_agirligi": agirlik,
+    }
+
+
+def basabas_fiyati_hesapla(toplam_gider, tahmini_uretim_ton):
+    """Giderleri tam karsilayan satis fiyati (TL/kg)."""
+    if tahmini_uretim_ton <= 0:
+        return None
+    return toplam_gider / (tahmini_uretim_ton * 1000)
+
+
+def zarar_olasiligi_hesapla(tahmini_fiyat, basabas_fiyati, log_hatalar):
+    """Modelin gecmis tahmin hatalari bugune uygulandiginda fiyatin basabasin altinda kalma orani.
+    Yalnizca fiyat belirsizligini kapsar; verim ve gider sabit kabul edilir."""
+    if not log_hatalar or basabas_fiyati is None:
+        return None
+    olasi_fiyatlar = tahmini_fiyat * np.exp(np.asarray(log_hatalar, dtype=float))
+    return round(float(np.mean(olasi_fiyatlar < basabas_fiyati)), 3)
+
 
 #fiyat tahmini modelini cagırıyor
+def fiyat_tahmini_al(urun_adi_csv, hedef_sezon):
+    return predict_product_price(product_name=urun_adi_csv, target_season=hedef_sezon)
+
+
 def tahmini_fiyat_al(urun_adi_csv, hedef_yil, hedef_sezon):
-    sonuc = predict_product_price(
-        product_name=urun_adi_csv,
-        target_season=hedef_sezon,
-    )
-    return sonuc["predicted_price"]
+    return fiyat_tahmini_al(urun_adi_csv, hedef_sezon)["predicted_price"]
 
 
 def guncel_gubre_fiyati_al():
@@ -185,15 +197,18 @@ def tahmini_mazot_fiyati_al(hedef_yil, hedef_sezon):
 
 def kar_hesapla_tam(db, ilce_id, urun_id, ilce_adi, urun_sistem_adi, urun_adi_csv,
                      donum, hedef_yil, hedef_sezon,
-                     sulama_maliyeti, iscilik_maliyeti, tohum_maliyeti):
-    # 1. adim: verim oranini bul
-    verim_orani = verim_orani_hesapla(ilce_id, urun_id, ilce_adi, urun_adi_csv, db)
+                     sulama_maliyeti, iscilik_maliyeti, tohum_maliyeti,
+                     gecmis_verimler=None, donum_basi_ek_maliyet=0):
+    # 1. adim: verim (ilce ortalamasi, varsa ciftcinin kendi gecmisiyle birlestirilir)
+    ilce_verimi = verim_orani_hesapla(ilce_id, urun_id, ilce_adi, urun_adi_csv, db)
+    verim = verim_birlestir(ilce_verimi, gecmis_verimler)
 
-    # 2. adim: tahmini fiyati al
-    tahmini_fiyat = tahmini_fiyat_al(urun_adi_csv, hedef_yil, hedef_sezon)
+    # 2. adim: tahmini fiyat ve belirsizlik araligi
+    fiyat = fiyat_tahmini_al(urun_adi_csv, hedef_sezon)
+    tahmini_fiyat = fiyat["predicted_price"]
 
     # 3. adim: gelir hesapla
-    gelir_sonucu = tahmini_gelir_hesapla(donum, verim_orani, tahmini_fiyat)
+    gelir_sonucu = tahmini_gelir_hesapla(donum, verim["verim"], tahmini_fiyat)
 
     # 4. adim: gubre ve mazot fiyatlarini al
     gubre_fiyati_ton_basi = guncel_gubre_fiyati_al()
@@ -202,41 +217,58 @@ def kar_hesapla_tam(db, ilce_id, urun_id, ilce_adi, urun_sistem_adi, urun_adi_cs
     # 5. adim: gider hesapla
     gider_sonucu = tahmini_gider_hesapla(
         urun_sistem_adi, donum, gubre_fiyati_ton_basi, mazot_fiyati_litre_basi,
-        sulama_maliyeti, iscilik_maliyeti, tohum_maliyeti
+        sulama_maliyeti, iscilik_maliyeti, tohum_maliyeti, donum_basi_ek_maliyet
+    )
+    toplam_gider = gider_sonucu["toplam_gider"]
+
+    # 6. adim: net kar, kotu/iyi senaryo, basabas ve zarar olasiligi
+    net_kar = net_kar_hesapla(gelir_sonucu["tahmini_gelir"], toplam_gider)
+    uretim_ton = donum * verim["verim"]
+
+    def senaryo_kari(senaryo_fiyati):
+        if senaryo_fiyati is None:
+            return None
+        return round(float(uretim_ton * 1000 * senaryo_fiyati - toplam_gider), 2)
+
+    basabas = basabas_fiyati_hesapla(toplam_gider, uretim_ton)
+    araliklar = get_price_intervals()
+
+    logger.debug(
+        "kar hesabi: ilce=%s urun=%s donum=%s verim=%s fiyat=%s uretim=%s gelir=%s gubre=%s mazot=%s ek=%s gider=%s",
+        ilce_adi, urun_adi_csv, donum, verim["verim"], tahmini_fiyat,
+        gelir_sonucu["tahmini_uretim"], gelir_sonucu["tahmini_gelir"],
+        gider_sonucu["gubre_gideri"], gider_sonucu["mazot_gideri"],
+        gider_sonucu["ek_giderler"], toplam_gider,
     )
 
-    # 6. adim: net kar
-    net_kar = net_kar_hesapla(gelir_sonucu["tahmini_gelir"], gider_sonucu["toplam_gider"])
-
-    print("\n========== KAR HESABI ==========")
-    print("İlçe:", ilce_adi)
-    print("Ürün:", urun_adi_csv)
-    print("Dönüm:", donum)
-    print("Verim Oranı:", verim_orani)
-    print("Tahmini Fiyat:", tahmini_fiyat)
-    print("Tahmini Üretim:", gelir_sonucu["tahmini_uretim"])
-    print("Tahmini Gelir:", gelir_sonucu["tahmini_gelir"])
-    print("================================\n")
-
-    print("Gübre gideri:", gider_sonucu["gubre_gideri"])
-    print("Mazot gideri:", gider_sonucu["mazot_gideri"])
-    print("Ek giderler:", gider_sonucu["ek_giderler"])
-    print("Toplam gider:", gider_sonucu["toplam_gider"])
-
-    # hepsini tek bir sozlukte birlestir
-    sonuc = {
+    return {
         "tahmini_uretim": gelir_sonucu["tahmini_uretim"],
         "tahmini_fiyat": tahmini_fiyat,
         "tahmini_gelir": gelir_sonucu["tahmini_gelir"],
         "gubre_gideri": gider_sonucu["gubre_gideri"],
         "mazot_gideri": gider_sonucu["mazot_gideri"],
         "ek_giderler": gider_sonucu["ek_giderler"],
-        "toplam_gider": gider_sonucu["toplam_gider"],
+        "toplam_gider": toplam_gider,
         "net_kar": net_kar,
+        # belirsizlik
+        "fiyat_dusuk": fiyat["price_low"],
+        "fiyat_yuksek": fiyat["price_high"],
+        "net_kar_dusuk": senaryo_kari(fiyat["price_low"]),
+        "net_kar_yuksek": senaryo_kari(fiyat["price_high"]),
+        "aralik_isabeti": None if araliklar is None else araliklar["loo_coverage"],
+        "basabas_fiyati": None if basabas is None else round(float(basabas), 2),
+        "zarar_olasiligi": zarar_olasiligi_hesapla(tahmini_fiyat, basabas, fiyat["log_errors"]),
+        # verim kaynagi
+        "verim_ton_donum": round(float(verim["verim"]), 3),
+        "ilce_verimi_ton_donum": round(float(verim["ilce_verimi"]), 3),
+        "kendi_verim_agirligi": round(verim["kendi_verim_agirligi"], 2),
+        # iscilik/tohum/sulama girilmediyse zarar olasiligi oldugundan dusuk gorunur
+        "maliyetler_eksik": not (sulama_maliyeti or iscilik_maliyeti or tohum_maliyeti or donum_basi_ek_maliyet),
+        "varsayimlar": varsayimlar_al(urun_sistem_adi),
     }
-    return sonuc
 
-def kar_hesaplama_son(db,ilce,urun,sezon,donum,sulama_maliyeti=0,iscilik_maliyeti=0,tohum_maliyeti=0):
+def kar_hesaplama_son(db,ilce,urun,sezon,donum,sulama_maliyeti=0,iscilik_maliyeti=0,tohum_maliyeti=0,
+                      gecmis_verimler=None, donum_basi_ek_maliyet=0):
     ilce_kaydi = db.query(models.Ilce).filter(
         models.Ilce.ilce_adi == ilce
     ).first()
@@ -264,4 +296,6 @@ def kar_hesaplama_son(db,ilce,urun,sezon,donum,sulama_maliyeti=0,iscilik_maliyet
         sulama_maliyeti=sulama_maliyeti,
         iscilik_maliyeti=iscilik_maliyeti,
         tohum_maliyeti=tohum_maliyeti,
+        gecmis_verimler=gecmis_verimler,
+        donum_basi_ek_maliyet=donum_basi_ek_maliyet,
     )

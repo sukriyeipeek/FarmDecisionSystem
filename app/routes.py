@@ -4,7 +4,7 @@ from passlib.context import CryptContext
 
 from app import models
 from app import schemas
-from app.database import SessionLocal
+from app.auth import admin_gerekli, get_db, mevcut_kullanici, token_olustur
 
 from app.services.risk import (FIYAT_HARITASI, REFERANS, kota_doluluk_hesapla, cv_hesapla, sapma_riski_hesapla,
                                genel_risk_hesapla, risk_seviyesi_belirle, mazot_tahmini_al, enflasyon_tahmini_al,
@@ -14,6 +14,7 @@ from app.services.profit_service import kar_hesaplama_son
 from app.services.price_prediction import predict_product_price
 from app.services.optimization_plan import create_plan_for_user_fields
 from app.services.hal_price_service import get_hal_prices
+from app.services.product_catalog import varsayim_ozeti
 
 # İşlem yollarını ayıran Router objemiz
 router = APIRouter()
@@ -27,21 +28,6 @@ def get_password_hash(password: str):
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
-
-# Her işlemde veritabanı tüneli açıp kapatan fonksiyon
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-def admin_kontrol(kullanici_id:int ,db : Session):
-    kullanici=db.query(models.Kullanici).filter(models.Kullanici.kullanici_id==kullanici_id).first()
-    if not kullanici  or not kullanici.is_admin:
-        raise HTTPException(status_code=403,detail="Bu işlem için yetkin yok.")
-    return kullanici
-
 
 #KULLANICI KAYIT ENDPOINT i
 @router.post("/kullanici/kayit", response_model=schemas.KullaniciResponse)
@@ -95,6 +81,8 @@ def giris(kullanici: schemas.KullaniciLogin, db:Session=Depends(get_db)):
     db.commit()
 
     return{
+          "access_token": token_olustur(dbUser.kullanici_id),
+          "token_type": "bearer",
           "kullanici_id": dbUser.kullanici_id,
           "ad_soyad": dbUser.ad_soyad,
           "yas": dbUser.yas,
@@ -106,7 +94,10 @@ def giris(kullanici: schemas.KullaniciLogin, db:Session=Depends(get_db)):
 
 #kullanıcı bilgilerini getirir
 @router.get("/kullanici/{kullanici_id}")
-def kullanici_getir(kullanici_id:int,db:Session=Depends(get_db)):
+def kullanici_getir(kullanici_id:int,db:Session=Depends(get_db),
+                    aktif:models.Kullanici=Depends(mevcut_kullanici)):
+    if aktif.kullanici_id != kullanici_id and not aktif.is_admin:
+        raise HTTPException(status_code=403, detail="Bu bilgilere erişim yetkin yok.")
     user=db.query(models.Kullanici).filter(models.Kullanici.kullanici_id==kullanici_id).first()
 
     if not user:
@@ -126,8 +117,9 @@ def kullanici_getir(kullanici_id:int,db:Session=Depends(get_db)):
 
 #kullanıcı bilgilerini günceller ( kişisel bilgilerim sayfasından)
 @router.put("/kullanici/guncelle")
-def kullanici_guncelle(veri: schemas.KullaniciUpdate, db:Session=Depends(get_db)):
-    user=db.query(models.Kullanici).filter(models.Kullanici.kullanici_id==veri.kullanici_id).first()
+def kullanici_guncelle(veri: schemas.KullaniciUpdate, db:Session=Depends(get_db),
+                       aktif:models.Kullanici=Depends(mevcut_kullanici)):
+    user=aktif
 
     if not user:
         raise HTTPException(
@@ -156,11 +148,17 @@ def ilce_liste(db: Session = Depends(get_db)):
 def urun_liste(db: Session = Depends(get_db)):
     return db.query(models.Urun).filter(models.Urun.aktif==True,models.Urun.urun_adi!="SOGAN KURU").all()
 
+#kar hesabinda kullanilan urun sabitleri ve hangilerinin yaklasik oldugu
+@router.get("/urun/varsayimlar")
+def urun_varsayimlari():
+    return varsayim_ozeti()
+
 #tarla ekleme
 @router.post("/tarla/ekle")
-def tarla_ekle(veri: schemas.TarlaCreate, db: Session = Depends(get_db)):
+def tarla_ekle(veri: schemas.TarlaCreate, db: Session = Depends(get_db),
+               aktif: models.Kullanici = Depends(mevcut_kullanici)):
     yeni_tarla = models.Tarla(
-        kullanici_id=veri.kullanici_id,
+        kullanici_id=aktif.kullanici_id,
         tarla_adi=veri.tarla_adi,
         ilce_id=veri.ilce_id
     )
@@ -188,8 +186,8 @@ def tarla_ekle(veri: schemas.TarlaCreate, db: Session = Depends(get_db)):
 
 #tarla listeleme
 @router.get("/tarla/liste")
-def tarla_liste(kullanici_id: int, db: Session = Depends(get_db)):
-    tarlalar = db.query(models.Tarla).filter(models.Tarla.kullanici_id == kullanici_id).all()
+def tarla_liste(db: Session = Depends(get_db), aktif: models.Kullanici = Depends(mevcut_kullanici)):
+    tarlalar = db.query(models.Tarla).filter(models.Tarla.kullanici_id == aktif.kullanici_id).all()
 
     sonuc = []
     for t in tarlalar:
@@ -219,8 +217,12 @@ def tarla_liste(kullanici_id: int, db: Session = Depends(get_db)):
 
 #tarla silme
 @router.delete("/tarla/sil/{tarla_id}")
-def tarla_sil(tarla_id: int, db: Session = Depends(get_db)):
-    tarla = db.query(models.Tarla).filter(models.Tarla.tarla_id == tarla_id).first()
+def tarla_sil(tarla_id: int, db: Session = Depends(get_db),
+              aktif: models.Kullanici = Depends(mevcut_kullanici)):
+    tarla = db.query(models.Tarla).filter(
+        models.Tarla.tarla_id == tarla_id,
+        models.Tarla.kullanici_id == aktif.kullanici_id,
+    ).first()
     if not tarla:
         raise HTTPException(status_code=404, detail="Tarla bulunamadı.")
 
@@ -245,7 +247,8 @@ def tarla_sil(tarla_id: int, db: Session = Depends(get_db)):
 
 #risk analiz
 @router.post("/tahmin/risk")
-def tahmin_risk(veri: schemas.RiskTahminRequest,db: Session = Depends(get_db)):
+def tahmin_risk(veri: schemas.RiskTahminRequest,db: Session = Depends(get_db),
+                aktif: models.Kullanici = Depends(mevcut_kullanici)):
     try:
         return risk_hesapla(
             db=db,
@@ -253,7 +256,7 @@ def tahmin_risk(veri: schemas.RiskTahminRequest,db: Session = Depends(get_db)):
             urun=veri.urun,
             sezon=veri.sezon,
             donum=veri.donum,
-            kullanici_id=veri.kullanici_id,
+            kullanici_id=aktif.kullanici_id,
         )
 
     except ValueError as e:
@@ -261,10 +264,10 @@ def tahmin_risk(veri: schemas.RiskTahminRequest,db: Session = Depends(get_db)):
 
 #risk analiz logu profildeki
 @router.get("/risk/gecmis", response_model=list[schemas.RiskLogResponse])
-def risk_gecmisi(kullanici_id: int, db: Session = Depends(get_db)):
+def risk_gecmisi(db: Session = Depends(get_db), aktif: models.Kullanici = Depends(mevcut_kullanici)):
     kayitlar = (
         db.query(models.RiskAnalizLog)
-        .filter(models.RiskAnalizLog.kullanici_id == kullanici_id)
+        .filter(models.RiskAnalizLog.kullanici_id == aktif.kullanici_id)
         .order_by(models.RiskAnalizLog.sorgu_tarihi.desc())
         .all()
     )
@@ -294,7 +297,8 @@ def risk_gecmisi(kullanici_id: int, db: Session = Depends(get_db)):
     return sonuc
 
 @router.post("/kar/hesapla")
-def kar_hesapla(veri: schemas.KarHesabiRequest, db: Session = Depends(get_db)):
+def kar_hesapla(veri: schemas.KarHesabiRequest, db: Session = Depends(get_db),
+                _aktif: models.Kullanici = Depends(mevcut_kullanici)):
     ilce_kaydi = db.query(models.Ilce).filter(models.Ilce.ilce_adi == veri.ilce).first()
     urun_kaydi = db.query(models.Urun).filter(models.Urun.aktif==True,models.Urun.urun_adi == veri.urun).first()
 
@@ -314,6 +318,7 @@ def kar_hesapla(veri: schemas.KarHesabiRequest, db: Session = Depends(get_db)):
             sulama_maliyeti=veri.sulama_maliyeti,
             iscilik_maliyeti=veri.iscilik_maliyeti,
             tohum_maliyeti=veri.tohum_maliyeti,
+            gecmis_verimler=veri.gecmis_verimler,
         )
 
     except ValueError as e:
@@ -324,7 +329,8 @@ def kar_hesapla(veri: schemas.KarHesabiRequest, db: Session = Depends(get_db)):
 
 #fiyat tahmini
 @router.post("/tahmin/fiyat")
-def tahmin_fiyat(veri: schemas.FiyatTahminRequest,db: Session=Depends(get_db)):
+def tahmin_fiyat(veri: schemas.FiyatTahminRequest,db: Session=Depends(get_db),
+                 _aktif: models.Kullanici = Depends(mevcut_kullanici)):
     urun_kaydi = db.query(models.Urun).filter(models.Urun.aktif==True,models.Urun.urun_adi == veri.urun).first()
     if not urun_kaydi:
         raise HTTPException(status_code=404,detail="Urun bulanamdi..")
@@ -338,12 +344,17 @@ def tahmin_fiyat(veri: schemas.FiyatTahminRequest,db: Session=Depends(get_db)):
     return {
         "sezon":veri.sezon,
         "urun":veri.urun,
-        "tahmini_fiyat": sonuc["predicted_price"]
+        "tahmini_fiyat": sonuc["predicted_price"],
+        "fiyat_dusuk": sonuc["price_low"],
+        "fiyat_yuksek": sonuc["price_high"],
     }
 
 #urunler
 @router.get("/urunlerim/{kullanici_id}")
-def kullanici_urunleri(kullanici_id:int,db:Session=Depends(get_db)):
+def kullanici_urunleri(kullanici_id:int,db:Session=Depends(get_db),
+                       aktif:models.Kullanici=Depends(mevcut_kullanici)):
+    if aktif.kullanici_id != kullanici_id and not aktif.is_admin:
+        raise HTTPException(status_code=403, detail="Bu bilgilere erişim yetkin yok.")
     #kullanıcıya ait tarlarar getirir,
     tarlalar= (db.query(models.Tarla).filter(models.Tarla.kullanici_id == kullanici_id).all())
     if not tarlalar:
@@ -381,15 +392,9 @@ def kullanici_urunleri(kullanici_id:int,db:Session=Depends(get_db)):
     return sonuc
 
 @router.post("/oneri/tarla_getir")
-def optimize_ekim_planı(veri:schemas.OptimizationTarlaRequest,db: Session=Depends(get_db)):
-    kullanici = (db.query(models.Kullanici).filter(models.Kullanici.kullanici_id == veri.kullanici_id).first())
-    if not kullanici:
-        raise HTTPException(
-            status_code=404,
-            detail="Kullanıcı bulunamadı."
-        )
-
-    tarla = (db.query(models.Tarla).filter(models.Tarla.tarla_id==veri.tarla_id,models.Tarla.kullanici_id==veri.kullanici_id).first())
+def optimize_ekim_planı(veri:schemas.OptimizationTarlaRequest,db: Session=Depends(get_db),
+                        aktif:models.Kullanici=Depends(mevcut_kullanici)):
+    tarla = (db.query(models.Tarla).filter(models.Tarla.tarla_id==veri.tarla_id,models.Tarla.kullanici_id==aktif.kullanici_id).first())
     if not tarla:
         raise HTTPException(status_code=404,detail="Tarla bulunamadı")
 
@@ -412,13 +417,17 @@ def optimize_ekim_planı(veri:schemas.OptimizationTarlaRequest,db: Session=Depen
         db=db,
         fields=fields,
         season=season,
-        selected_products=veri.secilen_urunler
+        selected_products=veri.secilen_urunler,
+        strateji=veri.strateji,
+        gecmis_verimler=veri.gecmis_verimler,
+        ek_maliyet_donum=veri.ek_maliyet_donum,
     )
 
     return plan
 
 @router.post("/oneri/manual")
-def manuel_optimized(veri:schemas.OptimizationManuelRequest,db: Session=Depends(get_db)):
+def manuel_optimized(veri:schemas.OptimizationManuelRequest,db: Session=Depends(get_db),
+                     _aktif:models.Kullanici=Depends(mevcut_kullanici)):
     fields=[{
         "id":0, #tarlalar içinde seçim yapmayacagı için
         "district":veri.ilce_adi,
@@ -436,18 +445,18 @@ def manuel_optimized(veri:schemas.OptimizationManuelRequest,db: Session=Depends(
         db=db,
         fields=fields,
         season=season,
-        selected_products=veri.secilen_urunler
+        selected_products=veri.secilen_urunler,
+        strateji=veri.strateji,
+        gecmis_verimler=veri.gecmis_verimler,
+        ek_maliyet_donum=veri.ek_maliyet_donum,
     )
     return plan
 
 @router.post("/oneri/onayla")
-def oneri_onayla(veri: schemas.OnerıOnaylaRequest, db: Session=Depends(get_db)):
-    kullanici=db.query(models.Kullanici).filter(models.Kullanici.kullanici_id==veri.kullanici_id).first()
-    if not kullanici:
-        raise HTTPException(status_code=404,detail="Kullanici bulunamadi")
-
+def oneri_onayla(veri: schemas.OnerıOnaylaRequest, db: Session=Depends(get_db),
+                 aktif: models.Kullanici=Depends(mevcut_kullanici)):
     tarla=db.query(models.Tarla).filter(models.Tarla.tarla_id==veri.tarla_id,
-                                        models.Tarla.kullanici_id==veri.kullanici_id).first()
+                                        models.Tarla.kullanici_id==aktif.kullanici_id).first()
     if not tarla:
         raise HTTPException(status_code=404,detail="tarla bulunamadu.")
     if not veri.urunler:
@@ -483,7 +492,7 @@ def oneri_onayla(veri: schemas.OnerıOnaylaRequest, db: Session=Depends(get_db))
            kota_kaydi.kullanilan_kota=(kota_kaydi.kullanilan_kota or 0) + satir.donum
 
     yeni_paket=models.OneriPaketi(
-        kullanici_id=veri.kullanici_id,
+        kullanici_id=aktif.kullanici_id,
         tarla_id=veri.tarla_id,
         hesaplanan_toplam_kar=veri.hesaplanan_toplam_kar,
         kabul_edildi_mi=True
@@ -521,15 +530,13 @@ def get_daily_hal_prices():
 #admin endpointleri
 #kullanıcıları listeliyor
 @router.get("/admin/kullanicilar",response_model=list[schemas.AdminKullaniciResponse])
-def admin_kullanicilari_getir(admin_id:int,db:Session=Depends(get_db)):
-    admin_kontrol(admin_id,db)
+def admin_kullanicilari_getir(db:Session=Depends(get_db),_admin:models.Kullanici=Depends(admin_gerekli)):
     kullanicilar=db.query(models.Kullanici).all()
     return kullanicilar
 
 #admin kullanıcı yetkilendiriyor
 @router.put("/admin/kullanicilar/{kullanici_id}/admin")
-def admin_yetkisi(kullanici_id:int,admin_id:int,db:Session=Depends(get_db)):
-    admin_kontrol(admin_id,db)
+def admin_yetkisi(kullanici_id:int,db:Session=Depends(get_db),_admin:models.Kullanici=Depends(admin_gerekli)):
     kullanici=db.query(models.Kullanici).filter(models.Kullanici.kullanici_id==kullanici_id).first()
 
     if not kullanici:
@@ -548,15 +555,13 @@ def admin_yetkisi(kullanici_id:int,admin_id:int,db:Session=Depends(get_db)):
 
 #ürünleri listeleme
 @router.get("/admin/urunler",response_model=list[schemas.AdminUrunResponse])
-def admin_urunleri_geti(admin_id:int,db:Session=Depends(get_db)):
-    admin_kontrol(admin_id,db)
+def admin_urunleri_geti(db:Session=Depends(get_db),_admin:models.Kullanici=Depends(admin_gerekli)):
     urunler= db.query(models.Urun).all()
     return urunler
 
 #ürünü aktif pasif yapma
 @router.put("/admin/urunler/{urun_id}/adurum")
-def admin_urun_durum(urun_id:int,admin_id:int,db:Session=Depends(get_db)):
-    admin_kontrol(admin_id,db)
+def admin_urun_durum(urun_id:int,db:Session=Depends(get_db),_admin:models.Kullanici=Depends(admin_gerekli)):
 
     urun=db.query(models.Urun).filter(models.Urun.urun_id==urun_id).first()
 
