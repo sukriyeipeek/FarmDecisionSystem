@@ -7,6 +7,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
+import { authFetch } from "../api";
 
 const COLORS = [
   "#2E7D32", // yeşil
@@ -39,7 +40,7 @@ function MyProducts() {
 
   const urunleriGetir = async () => {
     try {
-      const res = await fetch(
+      const res = await authFetch(
         `http://localhost:8000/urunlerim/${kullanici.id}`
       );
       if (!res.ok){

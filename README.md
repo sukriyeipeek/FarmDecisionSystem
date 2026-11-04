@@ -164,11 +164,15 @@ py -3.11 -m venv .venv
 pip install -r requirements.txt
 ```
 
-Proje kök dizininde bir `.env` dosyası oluşturun:
+Proje kök dizininde `.env.example` dosyasını `.env` olarak kopyalayıp doldurun:
 
 ```text
-sifre=<MySQL şifresi>
+DATABASE_URL=mysql+pymysql://<kullanıcı>:<şifre>@localhost:3306/tarim_karar_analiz
+JWT_SECRET=<en az 32 karakterlik rastgele anahtar>
 ```
+
+Anahtar üretmek için: `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+`JWT_SECRET` tanımlı değilse veya kısaysa giriş yapılamaz. Eski `sifre=` değişkeni geçici olarak hâlâ okunur, ancak kullanımdan kalkmıştır.
 
 ### Veritabanı
 
@@ -214,7 +218,9 @@ app/
 ├── routes.py         API uç noktaları
 ├── models.py         Veritabanı modelleri
 ├── schemas.py        İstek ve yanıt şemaları
+├── auth.py           JWT üretimi ve yetki bağımlılıkları
 ├── services/         Fiyat, risk, kâr, optimizasyon ve veri servisleri
+│   └── product_catalog.py  Ürün adı, mevsim, gübre ve mazot sabitleri (tek kaynak)
 └── scripts/          Model eğitimi, veri yükleme ve backtest betikleri
 data/
 ├── raw_data/         Ham veriler
@@ -227,7 +233,7 @@ database_seed.sql     İlçe ve ürün başlangıç verileri
 
 ## API
 
-Başlıca uç noktalar aşağıdadır; tam liste `/docs` adresindedir.
+Başlıca uç noktalar aşağıdadır; tam liste `/docs` adresindedir. `/kullanici/giris` bir `access_token` döndürür; kimlik doğrulaması gerektiren uç noktalar `Authorization: Bearer <token>` başlığı bekler ve kullanıcıyı token'dan belirler (istekte `kullanici_id` gönderilmez). `/admin/*` uç noktaları yalnızca yönetici hesaplara açıktır.
 
 | Metot | Uç nokta | Açıklama |
 | --- | --- | --- |
@@ -249,7 +255,7 @@ Testler veritabanı veya internet bağlantısı gerektirmez.
 
 ## Bilinen Kısıtlar ve Yol Haritası
 
-- **Kimlik doğrulama:** Uygulama şu an yerel kullanım içindir. Yayına alınmadan önce JWT tabanlı oturum yönetimi eklenmelidir.
+- **Kimlik doğrulama:** JWT ile oturum yönetimi vardır; ancak refresh token, parola sıfırlama ve giriş denemesi sınırı henüz yoktur. Token tarayıcıda `localStorage`'da tutulur; yayına alırken HttpOnly çerez değerlendirilmelidir.
 - **Maliyet kalemleri:** Varsayılan kâr hesabı yalnızca gübre ve mazot giderlerini içerir. İşçilik, tohum ve sulama için bölgesel varsayılanlar eklenmesi planlanmaktadır.
 - **Enflasyon tahmini:** Fiyat tahmini enflasyon tahminine doğrudan bağlıdır. Enflasyon modelinin de zaman serisi testiyle değerlendirilmesi planlanmaktadır.
 - **Dış veri kaynakları:** Güncel hal ve gübre fiyatları web kaynaklarından alınır. Hal fiyatları için yedek kaynaklar mevcuttur.

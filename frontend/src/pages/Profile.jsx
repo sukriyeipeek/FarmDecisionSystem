@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import "../App.css";
+import { authFetch } from "../api";
 
 function Profile() {
   const navigate = useNavigate();
@@ -19,7 +20,7 @@ function Profile() {
     setKullanici(user);
     setForm({ ad_soyad: user.ad || "", yas: user.yas || "", cinsiyet: user.cinsiyet || "", telefon: user.telefon || "" });
 
-    fetch(`http://localhost:8000/kullanici/${user.id}`)
+    authFetch(`http://localhost:8000/kullanici/${user.id}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data) {
@@ -42,7 +43,7 @@ function Profile() {
     e.preventDefault();
     setMesaj({ text: "", type: "" });
     try {
-      const res = await fetch("http://localhost:8000/kullanici/guncelle", {
+      const res = await authFetch("http://localhost:8000/kullanici/guncelle", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ kullanici_id: kullanici.id, ...form }),

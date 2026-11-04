@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import "../App.css";
 import { aktifUrunleriGetir, URUN_GORUNEN_ADLAR } from "../constants/urunler";
+import { authFetch } from "../api";
 
 const ILCELER = ["Bayındır", "Bergama", "Menderes", "Tire", "Torbalı", "Ödemiş"];
 const SEZONLAR = ["İlkbahar", "Yaz", "Sonbahar", "Kış"];
@@ -24,7 +25,7 @@ function Recommendations() {
 
   useEffect(() => {
     if (aktifKullanici?.id) {
-      fetch(`http://localhost:8000/tarla/liste?kullanici_id=${aktifKullanici.id}`)
+      authFetch(`http://localhost:8000/tarla/liste`)
         .then((res) => res.json())
         .then((data) => setTarlalar(Array.isArray(data) ? data : []))
         .catch(() => setTarlalar([]));
@@ -70,7 +71,7 @@ function Recommendations() {
     setBasariMesaji("");
 
     try {
-      const res = await fetch("http://localhost:8000/oneri/onayla", {
+      const res = await authFetch("http://localhost:8000/oneri/onayla", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -87,7 +88,7 @@ function Recommendations() {
       if (res.ok) {
         setBasariMesaji("✅ Ekim planı başarıyla onaylandı. Tarlanız güncellendi.");
         // Tarla listesini tazele (boş dönüm güncellensin)
-        fetch(`http://localhost:8000/tarla/liste?kullanici_id=${aktifKullanici.id}`)
+        authFetch(`http://localhost:8000/tarla/liste`)
           .then((r) => r.json())
           .then((d) => setTarlalar(Array.isArray(d) ? d : []));
         setTimeout(() => {
@@ -154,7 +155,7 @@ function Recommendations() {
     setYukleniyor(true);
     setSonuc(null);
     try {
-      const res = await fetch(endpoint, {
+      const res = await authFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),

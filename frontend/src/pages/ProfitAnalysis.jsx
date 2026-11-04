@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import "../App.css";
 import { aktifUrunleriGetir, URUN_GORUNEN_ADLAR } from "../constants/urunler";
+import { authFetch } from "../api";
 
 const ILCELER = ["Bayındır","Bergama","Menderes","Tire","Torbalı","Ödemiş"];
 const SEZONLAR = ["İlkbahar", "Yaz", "Sonbahar", "Kış"];
@@ -47,7 +48,7 @@ function ProfitAnalysis() {
     setYukleniyor(true);
     setSonuc(null);
     try {
-      const res = await fetch("http://localhost:8000/kar/hesapla", {
+      const res = await authFetch("http://localhost:8000/kar/hesapla", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({...form,kullanici_id:kullanici.id}),

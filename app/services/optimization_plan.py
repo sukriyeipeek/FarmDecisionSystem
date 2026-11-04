@@ -1,4 +1,5 @@
 from pathlib import Path
+import logging
 import re
 from datetime import date
 
@@ -7,6 +8,9 @@ import pulp
 
 from app.services.profit_service import kar_hesaplama_son
 from app.services.risk import risk_hesapla
+from app.services.product_catalog import URUN_MEVSIMLERI
+
+logger = logging.getLogger(__name__)
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -17,24 +21,7 @@ QUOTAPATH = ROOT_DIR / "data" / "processed" / "data_files" / "cleaned_quota.csv"
 PROFIT_WEIGHT = 0.70
 RISK_WEIGHT = 0.30
 
-PRODUCT_SEASONS = {
-    "DOMATES SALKIM": ["Spring"],
-    "SALATALIK SILOR": ["Spring", "Summer"],
-    "BEZELYE": ["Fall", "Winter"],
-    "BAKLA": ["Fall", "Winter"],
-    "KARNABAHAR": ["Summer", "Fall"],
-    "LAHANA KIRMIZI": ["Summer", "Fall"],
-    "LAHANA BEYAZ": ["Summer", "Fall"],
-    "BROKOLI": ["Summer", "Fall"],
-    "MARUL GOBEKLI": ["Fall", "Winter", "Spring"],
-    "ISPANAK": ["Fall", "Winter"],
-    "PIRASA": ["Spring", "Summer"],
-    "BIBER SIVRI": ["Spring"],
-    "KARPUZ": ["Spring"],
-    "SOGAN KURU": ["Fall", "Spring"],
-    "KABAK TAZE": ["Spring", "Summer"],
-    "PATLICAN UZUN": ["Spring"],
-}
+PRODUCT_SEASONS = URUN_MEVSIMLERI
 
 EN_TO_TR_SEASON = {
     "Spring": "İlkbahar",
@@ -174,9 +161,10 @@ def build_profit_data(db, suitable_products, district, season):
                 area=1,
             )
         except Exception as error:
-            print(
-                f"Kar hesabi basarisiz oldu: "
-                f"district={district}, product={product_name}, season={season}, error={error}"
+            logger.warning(
+                "Kar hesabi basarisiz oldu, urun planin disinda birakildi: "
+                "district=%s product=%s season=%s error=%s",
+                district, product_name, season, error,
             )
             continue
 
@@ -210,9 +198,10 @@ def build_risk_data(db, profit_data, district, season):
                 area=1,
             )
         except Exception as error:
-            print(
-                f"Risk hesabi basarisiz oldu: "
-                f"district={district}, product={product_name}, season={season}, error={error}"
+            logger.warning(
+                "Risk hesabi basarisiz oldu, urun planin disinda birakildi: "
+                "district=%s product=%s season=%s error=%s",
+                district, product_name, season, error,
             )
             continue
 

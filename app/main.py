@@ -1,9 +1,17 @@
+import logging
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import models
 from app.database import engine
 import app.routes
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -21,12 +29,11 @@ def baslangic():
         "durum": "Aktif",
     }
 
+VARSAYILAN_ORIGINS = "http://localhost:5173,http://localhost:5174"
 origins = [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "http://localhost:5174",
-    "http://localhost:5179",
-    "http://127.0.0.1:5179",
+    o.strip()
+    for o in os.getenv("CORS_ORIGINS", VARSAYILAN_ORIGINS).split(",")
+    if o.strip()
 ]
 
 app_tarim.add_middleware(

@@ -25,7 +25,6 @@ class KullaniciLogin(BaseModel):
 
 class KullaniciUpdate(BaseModel):
 
-    kullanici_id:int
     ad_soyad:str
     yas:int | None=None
     cinsiyet:str | None=None
@@ -45,7 +44,6 @@ class TarlaUrunCreate(BaseModel):
 
 
 class TarlaCreate(BaseModel):
-    kullanici_id: int
     tarla_adi: str
     ilce_id: int
 
@@ -56,7 +54,6 @@ class RiskTahminRequest(BaseModel):
     urun: str
     donum: float = Field(..., gt=0)
     sezon: str
-    kullanici_id:int
 
 class RiskLogResponse(BaseModel):
     log_id: int
@@ -79,7 +76,6 @@ class RiskLogResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class KarHesabiRequest(BaseModel):
-    kullanici_id: int
     ilce: str
     urun: str
     donum: float = Field(..., gt=0)
@@ -93,7 +89,6 @@ class FiyatTahminRequest(BaseModel):
     urun : str
 
 class OptimizationTarlaRequest(BaseModel):
-    kullanici_id : int
     sezon: str
     tarla_id:int
     bos_donum: float
@@ -110,7 +105,6 @@ class OneriOnaylaUrun(BaseModel):
     donum:float
 
 class OnerıOnaylaRequest(BaseModel):
-    kullanici_id: int
     tarla_id:int
     hesaplanan_toplam_kar:float
     urunler: list[OneriOnaylaUrun]

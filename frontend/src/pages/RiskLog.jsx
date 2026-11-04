@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import "../App.css";
+import { authFetch } from "../api";
 
 function RiskLog() {
   const [kayitlar, setKayitlar] = useState([]);
@@ -11,7 +12,7 @@ function RiskLog() {
     if (!kayit) return;
     const user = JSON.parse(kayit);
 
-    fetch(`http://localhost:8000/risk/gecmis?kullanici_id=${user.id}`)
+    authFetch(`http://localhost:8000/risk/gecmis`)
       .then((res) => res.json())
       .then((data) => setKayitlar(data))
       .catch(() => setHata("Geçmiş yüklenemedi."))

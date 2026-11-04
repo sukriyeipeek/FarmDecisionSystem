@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { authFetch } from "../api";
 
 const API_URL = "http://127.0.0.1:8000";
 
@@ -29,8 +30,8 @@ function Admin() {
       setHata("");
 
       const [kullaniciResponse, urunResponse] = await Promise.all([
-        fetch(`${API_URL}/admin/kullanicilar?admin_id=${adminId}`),
-        fetch(`${API_URL}/admin/urunler?admin_id=${adminId}`),
+        authFetch(`${API_URL}/admin/kullanicilar`),
+        authFetch(`${API_URL}/admin/urunler`),
       ]);
 
       if (!kullaniciResponse.ok) {
@@ -74,8 +75,8 @@ function Admin() {
   // Kullanıcıyı admin yap / adminliğini kaldır
   const adminYetkisiniDegistir = async (kullaniciId) => {
     try {
-      const response = await fetch(
-        `${API_URL}/admin/kullanicilar/${kullaniciId}/admin?admin_id=${adminId}`,
+      const response = await authFetch(
+        `${API_URL}/admin/kullanicilar/${kullaniciId}/admin`,
         {
           method: "PUT",
         }
@@ -109,8 +110,8 @@ function Admin() {
   // Ürünü aktif / pasif yap
   const urunDurumunuDegistir = async (urunId) => {
     try {
-      const response = await fetch(
-        `${API_URL}/admin/urunler/${urunId}/adurum?admin_id=${adminId}`,
+      const response = await authFetch(
+        `${API_URL}/admin/urunler/${urunId}/adurum`,
         {
           method: "PUT",
         }

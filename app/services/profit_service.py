@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 import pandas as pd
 
@@ -6,56 +7,21 @@ from app.services.price_prediction import predict_product_price
 from app.services.fuel_service import predict_fuel_price
 from app.services.fertilizer_service import get_commodity_price
 from app.services.risk import hedef_yil_belirle, sezon_cevir
+from app.services.product_catalog import GUBRE_RECETESI, MAZOT_TUKETIMI_LITRE_DONUM
+
+logger = logging.getLogger(__name__)
 
 # Bu dosyanin bulundugu yerden proje kokune cikip data klasorune iniyoruz
 KOK_DIZIN = Path(__file__).resolve().parent.parent.parent
 URETIM_TAHMIN_PATH = KOK_DIZIN / "data" / "processed" / "data_files" / "üretim_miktari_sonuclari.csv"
 
-#orman bakanlıgı pdfe göre
-GUBRE_RECETESI = {
-    "DOMATES SALKIM": {"azot_kg": 14, "fosfor_kg": 10},
-    "BIBER SIVRI":      {"azot_kg": 14, "fosfor_kg": 10},
-    "SALATALIK SILOR":   {"azot_kg": 14, "fosfor_kg": 10},
-    "KABAK TAZE":      {"azot_kg": 14, "fosfor_kg": 10},
-    "PATLICAN UZUN":           {"azot_kg": 14, "fosfor_kg": 10},
-    "SOGAN KURU":       {"azot_kg": 13, "fosfor_kg": 9},
-    "KARPUZ":             {"azot_kg": 15, "fosfor_kg": 9},
-    "BAKLA": {"azot_kg": 15, "fosfor_kg": 9},
-    "BEZELYE": {"azot_kg": 15, "fosfor_kg": 9},
-    "BROKOLI": {"azot_kg": 15, "fosfor_kg": 9},
-    "ISPANAK": {"azot_kg": 15, "fosfor_kg": 9},
-    "KARNABAHAR": {"azot_kg": 15, "fosfor_kg": 9},
-    "LAHANA BEYAZ": {"azot_kg": 15, "fosfor_kg": 9},
-    "LAHANA KIRMIZI": {"azot_kg": 15, "fosfor_kg": 9},
-    "MARUL":{"azot_kg": 15, "fosfor_kg": 9},
-    "PIRASA": {"azot_kg": 15, "fosfor_kg": 9},
-}
+# Urun bazli sabitler (gubre recetesi vb.) product_catalog.py'de tutulur.
 
 # Saf maddeyi gercek gubre urunune cevirmek icin carpanlar (PDF'ten)
 # Ornek: 14 kg saf azot lazimsa, Ure gubresi olarak 14 x 2.2 = 30.8 kg Ure almamiz lazim
 UREYE_CEVIRME_CARPANI = 2.2
 DAP_A_CEVIRME_CARPANI = 2.2
 
-
-# Sadece Domates icin net veri var, digerleri icin ayni oran kullanildi (yaklasik)
-MAZOT_TUKETIMI_LITRE_DONUM = {
-    "DOMATES SALKIM": 16.98,
-    "BIBER SIVRI":      16.98,
-    "SALATALIK SILOR":   16.98,
-    "KABAK TAZE":      16.98,
-    "PATLICAN UZUN":           16.98,
-    "SOGAN KURU":       16.98,
-    "KARPUZ":             16.98,
-    "BAKLA":             16.98,
-    "BEZELYE":             16.98,
-    "BROKOLI":             16.98,
-    "ISPANAK":             16.98,
-    "KARNABAHAR":             16.98,
-    "LAHANA BEYAZ":             16.98,
-    "LAHANA KIRMIZI":             16.98,
-    "MARUL":             16.98,
-    "PIRASA":             16.98,
-}
 
 def uretim_tahmin_haritasi_olustur():
     df = pd.read_csv(URETIM_TAHMIN_PATH)
@@ -83,9 +49,8 @@ def verim_orani_hesapla(ilce_id, urun_id, ilce_adi, urun_adi_csv, db):
 
     anahtar = (ilce_adi, urun_adi_csv)
     tahmini_uretim = URETIM_TAHMIN_HARITASI.get(anahtar)
-    print("Anahtar:", anahtar)
-    print("Tahmini üretim:", tahmini_uretim)
-    print("Maksimum kota:", kota_kaydi.maksimum_kota)
+    logger.debug("verim: anahtar=%s tahmini_uretim=%s maksimum_kota=%s",
+                 anahtar, tahmini_uretim, kota_kaydi.maksimum_kota)
 
     if tahmini_uretim is None or tahmini_uretim <= 0:
         raise ValueError("Bu ilce/urun icin tahmini uretim verisi bulunamadi.")
@@ -208,20 +173,13 @@ def kar_hesapla_tam(db, ilce_id, urun_id, ilce_adi, urun_sistem_adi, urun_adi_cs
     # 6. adim: net kar
     net_kar = net_kar_hesapla(gelir_sonucu["tahmini_gelir"], gider_sonucu["toplam_gider"])
 
-    print("\n========== KAR HESABI ==========")
-    print("İlçe:", ilce_adi)
-    print("Ürün:", urun_adi_csv)
-    print("Dönüm:", donum)
-    print("Verim Oranı:", verim_orani)
-    print("Tahmini Fiyat:", tahmini_fiyat)
-    print("Tahmini Üretim:", gelir_sonucu["tahmini_uretim"])
-    print("Tahmini Gelir:", gelir_sonucu["tahmini_gelir"])
-    print("================================\n")
-
-    print("Gübre gideri:", gider_sonucu["gubre_gideri"])
-    print("Mazot gideri:", gider_sonucu["mazot_gideri"])
-    print("Ek giderler:", gider_sonucu["ek_giderler"])
-    print("Toplam gider:", gider_sonucu["toplam_gider"])
+    logger.debug(
+        "kar hesabi: ilce=%s urun=%s donum=%s verim=%s fiyat=%s uretim=%s gelir=%s gubre=%s mazot=%s ek=%s gider=%s",
+        ilce_adi, urun_adi_csv, donum, verim_orani, tahmini_fiyat,
+        gelir_sonucu["tahmini_uretim"], gelir_sonucu["tahmini_gelir"],
+        gider_sonucu["gubre_gideri"], gider_sonucu["mazot_gideri"],
+        gider_sonucu["ek_giderler"], gider_sonucu["toplam_gider"],
+    )
 
     # hepsini tek bir sozlukte birlestir
     sonuc = {
