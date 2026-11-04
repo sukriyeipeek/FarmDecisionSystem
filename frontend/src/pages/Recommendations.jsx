@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import "../App.css";
 import { aktifUrunleriGetir, URUN_GORUNEN_ADLAR } from "../constants/urunler";
 import { authFetch } from "../api";
+import { tl, yuzde } from "../belirsizlik";
 
 const ILCELER = ["Bayındır", "Bergama", "Menderes", "Tire", "Torbalı", "Ödemiş"];
 const SEZONLAR = ["İlkbahar", "Yaz", "Sonbahar", "Kış"];
@@ -22,6 +23,8 @@ function Recommendations() {
   const [onaylaniyor, setOnaylaniyor] = useState(false);
   const [basariMesaji, setBasariMesaji] = useState("");
   const [urunler, setUrunler] = useState([]);
+  const [strateji, setStrateji] = useState("dengeli");
+  const [ekMaliyet, setEkMaliyet] = useState("");
 
   useEffect(() => {
     if (aktifKullanici?.id) {
@@ -62,6 +65,11 @@ function Recommendations() {
     (toplam, urun) => toplam + urun.estimated_revenue,
     0
   );
+  const toplamKar = urunListesi.reduce((toplam, urun) => toplam + urun.estimated_profit, 0);
+  const toplamKarDusuk = urunListesi.every((u) => u.estimated_profit_low !== null)
+    ? urunListesi.reduce((toplam, urun) => toplam + urun.estimated_profit_low, 0)
+    : null;
+  const maliyetlerEksik = urunListesi.some((u) => u.costs_incomplete);
 
   const ekimiOnayla = async () => {
     if (!ilkPlan || !ilkPlan.success || urunListesi.length === 0) return;
@@ -77,7 +85,7 @@ function Recommendations() {
         body: JSON.stringify({
           kullanici_id: aktifKullanici.id,
           tarla_id: secilenTarla,
-          hesaplanan_toplam_kar: Math.round(toplamGelir),
+          hesaplanan_toplam_kar: Math.round(toplamKar),
           urunler: urunListesi.map((o) => ({
             urun_adi: o.product_name,
             donum: o.recommended_area,
@@ -136,6 +144,8 @@ function Recommendations() {
         sezon,
         bos_donum: toplamDonum,
         secilen_urunler: secilenUrunler.length > 0 ? secilenUrunler : null,
+        strateji,
+        ek_maliyet_donum: Number(ekMaliyet) || 0,
       };
     } else {
       if (!manuelForm.ilce || !manuelForm.donum) {
@@ -149,6 +159,8 @@ function Recommendations() {
         donum: Number(manuelForm.donum),
         sezon,
         secilen_urunler: secilenUrunler.length > 0 ? secilenUrunler : null,
+        strateji,
+        ek_maliyet_donum: Number(ekMaliyet) || 0,
       };
     }
 
@@ -314,6 +326,42 @@ function Recommendations() {
   )}
 </div>
 
+          <div className="field">
+            <label>Planlama Yaklaşımı</label>
+            <div className="source-toggle">
+              <button
+                type="button"
+                className={strateji === "dengeli" ? "active" : ""}
+                onClick={() => setStrateji("dengeli")}
+              >
+                Dengeli
+              </button>
+              <button
+                type="button"
+                className={strateji === "temkinli" ? "active" : ""}
+                onClick={() => setStrateji("temkinli")}
+              >
+                Temkinli
+              </button>
+            </div>
+            <p className="hint">
+              {strateji === "dengeli"
+                ? "Beklenen kârı en yüksek planı arar."
+                : "Fiyat düşerse en az zarar edecek planı arar; fiyatı çok oynak ürünlerden kaçınır."}
+            </p>
+          </div>
+
+          <div className="field">
+            <label>Diğer Giderler (₺/dönüm)</label>
+            <input
+              type="number"
+              min="0"
+              placeholder="İşçilik, tohum, sulama, kira… bilinmiyorsa boş bırak"
+              value={ekMaliyet}
+              onChange={(e) => setEkMaliyet(e.target.value)}
+            />
+          </div>
+
           {hata && <div className="form-message error">{hata}</div>}
 
           <button className="run-btn" onClick={oneriAl} disabled={yukleniyor}>
@@ -337,8 +385,14 @@ function Recommendations() {
                     <div className="donum">{o.recommended_area} dönüm</div>
                     <div className="urun">{URUN_GORUNEN_ADLAR[o.product_name] || o.product_name}</div>
                     <div className="Meta">Tahmini Üretim:{" "}{(o.estimated_production ?? 0).toLocaleString("tr-TR")}{" "}ton</div>
-                    <div className="Meta">Tarhini Gelir:{" "}{(o.estimated_revenue ?? 0).toLocaleString("tr-TR")} ₺</div>
+                    <div className="Meta">Tahmini Gelir:{" "}{(o.estimated_revenue ?? 0).toLocaleString("tr-TR")} ₺</div>
                     <div className="Meta">Tahmini Kâr:{" "}{(o.estimated_profit ?? 0).toLocaleString("tr-TR")} ₺</div>
+                    {o.estimated_profit_low !== null && (
+                      <div className="Meta">Kötü senaryoda kâr: {tl(o.estimated_profit_low)}</div>
+                    )}
+                    {o.loss_probability !== null && (
+                      <div className="Meta">Zarar olasılığı: {yuzde(o.loss_probability)}</div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -347,7 +401,29 @@ function Recommendations() {
                   <div className="label">Tahmini Toplam Gelir</div>
                   <div className="value">{toplamGelir.toLocaleString("tr-TR")} ₺</div>
                 </div>
+                <div className="result-card">
+                  <div className="label">Tahmini Toplam Kâr</div>
+                  <div className="value">{tl(toplamKar)}</div>
+                </div>
               </div>
+
+              {toplamKarDusuk !== null && (
+                <div className="form-message info">
+                  Fiyatlar kötü giderse toplam kâr {tl(toplamKarDusuk)} olur.
+                  {urunListesi[0]?.interval_coverage != null &&
+                    ` Geçmiş testlerde gerçek fiyat tahmin aralığında ${yuzde(urunListesi[0].interval_coverage)} oranında kaldı.`}
+                </div>
+              )}
+              {ilkPlan?.unallocated_area > 0 && (
+                <div className="form-message info">
+                  {ilkPlan.unallocated_area} dönüm için kârlı ve kotası uygun ürün bulunamadı; boş bırakılması önerilir.
+                </div>
+              )}
+              {maliyetlerEksik && (
+                <div className="form-message info">
+                  Diğer giderler girilmedi; kâr olduğundan yüksek, zarar olasılığı olduğundan düşük görünebilir.
+                </div>
+              )}
 
               {basariMesaji && (
                 <div className="form-message success">{basariMesaji}</div>

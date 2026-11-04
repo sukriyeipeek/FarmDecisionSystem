@@ -1,6 +1,10 @@
 from pydantic import BaseModel, EmailStr, ConfigDict, Field
-from typing import Optional
+from typing import Annotated, Literal, Optional
 from datetime import datetime
+
+# Ciftcinin beyan ettigi gecmis verim (ton/donum); 30 ustu girdi hatasi kabul edilir.
+GecmisVerim = Annotated[float, Field(gt=0, le=30)]
+Strateji = Literal["dengeli", "temkinli"]
 
 # Kullanıcı şemalrı ( kayıt ve giriş yapmak için)
 
@@ -83,6 +87,7 @@ class KarHesabiRequest(BaseModel):
     sulama_maliyeti: float | None = None
     iscilik_maliyeti: float | None = None
     tohum_maliyeti: float | None = None
+    gecmis_verimler: list[GecmisVerim] | None = Field(default=None, max_length=10)
 
 class FiyatTahminRequest(BaseModel):
     sezon: str
@@ -93,12 +98,20 @@ class OptimizationTarlaRequest(BaseModel):
     tarla_id:int
     bos_donum: float
     secilen_urunler: Optional[list[str]] = None
+    strateji: Strateji = "dengeli"
+    gecmis_verimler: dict[str, list[GecmisVerim]] | None = None
+    # iscilik, tohum, sulama, kira gibi gubre ve mazot disindaki giderler (TL/donum)
+    ek_maliyet_donum: float = Field(default=0, ge=0)
 
 class OptimizationManuelRequest(BaseModel):
     ilce_adi: str
     donum:float
     sezon : str
     secilen_urunler:Optional[list[str]] = None
+    strateji: Strateji = "dengeli"
+    gecmis_verimler: dict[str, list[GecmisVerim]] | None = None
+    # iscilik, tohum, sulama, kira gibi gubre ve mazot disindaki giderler (TL/donum)
+    ek_maliyet_donum: float = Field(default=0, ge=0)
 
 class OneriOnaylaUrun(BaseModel):
     urun_adi:str

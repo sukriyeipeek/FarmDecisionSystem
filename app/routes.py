@@ -14,6 +14,7 @@ from app.services.profit_service import kar_hesaplama_son
 from app.services.price_prediction import predict_product_price
 from app.services.optimization_plan import create_plan_for_user_fields
 from app.services.hal_price_service import get_hal_prices
+from app.services.product_catalog import varsayim_ozeti
 
 # İşlem yollarını ayıran Router objemiz
 router = APIRouter()
@@ -146,6 +147,11 @@ def ilce_liste(db: Session = Depends(get_db)):
 @router.get("/urun/liste")
 def urun_liste(db: Session = Depends(get_db)):
     return db.query(models.Urun).filter(models.Urun.aktif==True,models.Urun.urun_adi!="SOGAN KURU").all()
+
+#kar hesabinda kullanilan urun sabitleri ve hangilerinin yaklasik oldugu
+@router.get("/urun/varsayimlar")
+def urun_varsayimlari():
+    return varsayim_ozeti()
 
 #tarla ekleme
 @router.post("/tarla/ekle")
@@ -312,6 +318,7 @@ def kar_hesapla(veri: schemas.KarHesabiRequest, db: Session = Depends(get_db),
             sulama_maliyeti=veri.sulama_maliyeti,
             iscilik_maliyeti=veri.iscilik_maliyeti,
             tohum_maliyeti=veri.tohum_maliyeti,
+            gecmis_verimler=veri.gecmis_verimler,
         )
 
     except ValueError as e:
@@ -337,7 +344,9 @@ def tahmin_fiyat(veri: schemas.FiyatTahminRequest,db: Session=Depends(get_db),
     return {
         "sezon":veri.sezon,
         "urun":veri.urun,
-        "tahmini_fiyat": sonuc["predicted_price"]
+        "tahmini_fiyat": sonuc["predicted_price"],
+        "fiyat_dusuk": sonuc["price_low"],
+        "fiyat_yuksek": sonuc["price_high"],
     }
 
 #urunler
@@ -408,7 +417,10 @@ def optimize_ekim_planı(veri:schemas.OptimizationTarlaRequest,db: Session=Depen
         db=db,
         fields=fields,
         season=season,
-        selected_products=veri.secilen_urunler
+        selected_products=veri.secilen_urunler,
+        strateji=veri.strateji,
+        gecmis_verimler=veri.gecmis_verimler,
+        ek_maliyet_donum=veri.ek_maliyet_donum,
     )
 
     return plan
@@ -433,7 +445,10 @@ def manuel_optimized(veri:schemas.OptimizationManuelRequest,db: Session=Depends(
         db=db,
         fields=fields,
         season=season,
-        selected_products=veri.secilen_urunler
+        selected_products=veri.secilen_urunler,
+        strateji=veri.strateji,
+        gecmis_verimler=veri.gecmis_verimler,
+        ek_maliyet_donum=veri.ek_maliyet_donum,
     )
     return plan
 

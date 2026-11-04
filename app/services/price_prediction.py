@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -16,6 +17,8 @@ from app.services.inflation_service import load_raw_inflation_data, predict_infl
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 DATASET_PATH = ROOT_DIR / "data" / "processed" / "data_files" / "final_price_dataset.csv"
 MODEL_PATH = ROOT_DIR / "models" / "price_model_catboost.cbm"
+# Uretmek icin: python -m app.scripts.price_intervals
+INTERVALS_PATH = ROOT_DIR / "models" / "price_intervals.json"
 
 SEASON_ORDER = {
     "Winter": 0,
@@ -236,6 +239,46 @@ def forecast_price(
     return float(predicted), adjustment
 
 
+@lru_cache(maxsize=1)
+def get_price_intervals() -> dict | None:
+    if not INTERVALS_PATH.exists():
+        return None
+    return json.loads(INTERVALS_PATH.read_text(encoding="utf-8"))
+
+
+def latest_price_period(prices: dict[tuple[str, int], float]) -> int:
+    return max(period for _, period in prices)
+
+
+def interval_for_horizon(horizon: int) -> dict | None:
+    """Backtest'ten gelen log hata dagilimi; ufuk 1-4 sezon araligina sinirlanir."""
+    intervals = get_price_intervals()
+    if intervals is None:
+        return None
+    key = str(min(max(int(horizon), 1), 4))
+    return intervals["by_horizon"].get(key)
+
+
+def interval_for(product_name: str, horizon: int) -> dict | None:
+    """Ufkun ortak araligi, urunun kendi gecmis hatalarina dogru cekilir
+    (kural ve gerekce: app/scripts/price_intervals.py)."""
+    horizon_row = interval_for_horizon(horizon)
+    if horizon_row is None:
+        return None
+
+    product_row = get_price_intervals().get("by_product", {}).get(product_name)
+    if product_row is None:
+        return horizon_row
+
+    weight = product_row["weight"]
+    return {
+        "q_low": weight * product_row["q_low"] + (1 - weight) * horizon_row["q_low"],
+        "q_high": weight * product_row["q_high"] + (1 - weight) * horizon_row["q_high"],
+        # zarar olasiligi icin hata ornekleri: urunun kendi hatalari ile ufkun hatalari birlikte
+        "errors": product_row["errors"] + horizon_row["errors"],
+    }
+
+
 def predict_product_price(
     product_name: str,
     target_season: str,
@@ -265,16 +308,25 @@ def predict_product_price(
         annual_inflation=annual_inflation,
     )
 
+    predicted_price = max(0.0, predicted_price)
+    horizon = target_period - latest_price_period(prices)
+    interval = interval_for(product_name, horizon)
+
     return {
         "product_name": product_name,
         "season": target_season,
         "year": target_year,
+        "horizon": horizon,
         "base_year": from_period(base_period)[0],
         "base_price": round(base_price, 2),
         "years_back": years_back,
         "annual_inflation": round(annual_inflation, 2),
         "model_adjustment": round(adjustment, 4),
-        "predicted_price": round(max(0.0, predicted_price), 2),
+        "predicted_price": round(predicted_price, 2),
+        "price_low": None if interval is None else round(predicted_price * float(np.exp(interval["q_low"])), 2),
+        "price_high": None if interval is None else round(predicted_price * float(np.exp(interval["q_high"])), 2),
+        "interval_level": None if interval is None else get_price_intervals()["level"],
+        "log_errors": None if interval is None else interval["errors"],
     }
 
 

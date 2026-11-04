@@ -1305,3 +1305,9 @@ button {
     font-size: 26px;
   }
 }
+.hint {
+  margin: 6px 0 0;
+  font-size: 0.85rem;
+  color: var(--soil);
+  opacity: 0.8;
+}

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import "../App.css";
 import { aktifUrunleriGetir, URUN_GORUNEN_ADLAR } from "../constants/urunler";
 import { authFetch } from "../api";
+import { bosluklariTemizle, tl, verimleriAyikla, yuzde } from "../belirsizlik";
 
 const ILCELER = ["Bayındır","Bergama","Menderes","Tire","Torbalı","Ödemiş"];
 const SEZONLAR = ["İlkbahar", "Yaz", "Sonbahar", "Kış"];
@@ -15,6 +16,7 @@ function ProfitAnalysis() {
     sulama_maliyeti: "",
     iscilik_maliyeti: "",
     tohum_maliyeti: "",
+    gecmis_verimler: "",
   });
   const [kullanici,setKullanici]=useState(null);
   const [sonuc, setSonuc] = useState(null);
@@ -51,7 +53,10 @@ function ProfitAnalysis() {
       const res = await authFetch("http://localhost:8000/kar/hesapla", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({...form,kullanici_id:kullanici.id}),
+        body: JSON.stringify({
+          ...bosluklariTemizle(form),
+          gecmis_verimler: verimleriAyikla(form.gecmis_verimler),
+        }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -165,6 +170,17 @@ function ProfitAnalysis() {
                 onChange={handleChange}
               />
             </div>
+
+            <div className="field">
+              <label>Geçmiş Verimlerim (ton/dönüm)</label>
+              <input
+                type="text"
+                name="gecmis_verimler"
+                placeholder="Örn. 5.5, 6, 6.2 — bilinmiyorsa boş bırak"
+                value={form.gecmis_verimler}
+                onChange={handleChange}
+              />
+            </div>
           </div>
 
           {hata && <div className="form-message error">{hata}</div>}
@@ -226,6 +242,50 @@ function ProfitAnalysis() {
     <div className="label">Tahmini Net Kâr</div>
     <div className="value">{sonuc.net_kar.toLocaleString()} ₺</div>
   </div>
+
+  {sonuc.net_kar_dusuk !== null && (
+    <div className="panel" style={{marginTop:"15px"}}>
+      <h3>Belirsizlik</h3>
+      <div className="field">
+        <label>Fiyat aralığı</label>
+        <strong>{sonuc.fiyat_dusuk} – {sonuc.fiyat_yuksek} ₺/kg</strong>
+      </div>
+      <div className="field">
+        <label>Kâr aralığı (kötü – iyi senaryo)</label>
+        <strong>{tl(sonuc.net_kar_dusuk)} / {tl(sonuc.net_kar_yuksek)}</strong>
+      </div>
+      <div className="field">
+        <label>Başabaş fiyatı</label>
+        <strong>{sonuc.basabas_fiyati} ₺/kg</strong>
+      </div>
+      <div className="field">
+        <label>Zarar olasılığı (fiyat kaynaklı)</label>
+        <strong>{yuzde(sonuc.zarar_olasiligi)}</strong>
+      </div>
+      <p className="hint">
+        Aralık, modelin geçmiş yıllardaki gerçek tahmin hatalarından hesaplanır; geçmiş testlerde
+        gerçek fiyat bu aralıkta {yuzde(sonuc.aralik_isabeti)} oranında kaldı.
+      </p>
+    </div>
+  )}
+
+  {sonuc.kendi_verim_agirligi > 0 && (
+    <div className="form-message info" style={{marginTop:"15px"}}>
+      Verim: ilçe ortalaması {sonuc.ilce_verimi_ton_donum} ton/dönüm, senin geçmişinle birlikte{" "}
+      {sonuc.verim_ton_donum} ton/dönüm (senin verilerinin ağırlığı {yuzde(sonuc.kendi_verim_agirligi)}).
+    </div>
+  )}
+
+  {(sonuc.maliyetler_eksik || sonuc.varsayimlar?.length > 0) && (
+    <div className="form-message info" style={{marginTop:"15px"}}>
+      {sonuc.maliyetler_eksik && (
+        <div>İşçilik, tohum ve sulama girilmedi; zarar olasılığı olduğundan düşük görünebilir.</div>
+      )}
+      {sonuc.varsayimlar?.filter((v) => !v.startsWith("İşçilik")).map((v) => (
+        <div key={v}>{v}</div>
+      ))}
+    </div>
+  )}
 </>
             </>
           ) : (
