@@ -1,0 +1,15 @@
+.git
+.github
+.idea
+.vscode
+.venv
+__pycache__
+*.py[cod]
+*.egg-info
+node_modules
+frontend/dist
+.npm-cache
+.pytest-tmp*
+.env
+outputs
+*.log

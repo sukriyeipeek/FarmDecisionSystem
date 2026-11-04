@@ -1,3 +1,4 @@
+import { API_URL } from "../api";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 function Statistics() {
@@ -23,7 +24,7 @@ function Statistics() {
         setYukleniyor(true);
         setHata("");
 
-        const res = await fetch("http://localhost:8000/istatistikler/hal-fiyatlari");
+        const res = await fetch(`${API_URL}/istatistikler/hal-fiyatlari`);
 
         if (!res.ok) {
           throw new Error("Hal fiyatları alınamadı.");

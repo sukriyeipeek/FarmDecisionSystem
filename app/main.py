@@ -1,24 +1,31 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import models
-from app.database import engine
 import app.routes
+from app.auth import _secret_al, _sure_dakika
+from app.water_routes import router as water_router
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
-models.Base.metadata.create_all(bind=engine)
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    _secret_al()
+    if _sure_dakika() <= 0:
+        raise RuntimeError("JWT_EXPIRE_MINUTES pozitif olmalıdır.")
+    yield
 
 app_tarim = FastAPI(
     title="Tarımsal Karar ve Risk Analiz Sistemi",
     description="Çiftçiler için risk analizi ve arazi optimizasyonu sağlayan backend servisi.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 @app_tarim.get("/")
@@ -28,6 +35,10 @@ def baslangic():
         "proje": "Yapay Zeka Destekli Tarımsal Karar ve Risk Analiz Sistemi",
         "durum": "Aktif",
     }
+
+@app_tarim.get("/health")
+def health():
+    return {"status": "ok"}
 
 VARSAYILAN_ORIGINS = "http://localhost:5173,http://localhost:5174"
 origins = [
@@ -45,3 +56,4 @@ app_tarim.add_middleware(
 )
 
 app_tarim.include_router(app.routes.router)
+app_tarim.include_router(water_router)

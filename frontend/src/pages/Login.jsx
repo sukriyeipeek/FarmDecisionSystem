@@ -1,3 +1,4 @@
+import { API_URL } from "../api";
 import { useState } from "react";
 import "../App.css";
 
@@ -39,7 +40,7 @@ function Login() {
       return;
     }
 
-    const url = `http://localhost:8000${isLogin ? "/kullanici/giris" : "/kullanici/kayit"}`;
+    const url = `${API_URL}${isLogin ? "/kullanici/giris" : "/kullanici/kayit"}`;
     const payload = isLogin
       ? { email: form.email, sifre: form.password }
       : {

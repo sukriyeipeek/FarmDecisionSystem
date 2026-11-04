@@ -21,7 +21,7 @@ class Kullanici(Base):
     cinsiyet=Column(String(20),nullable=True)
     telefon=Column(String(20),nullable=True)
     kayit_tarihi=Column(DateTime,server_default=func.now())
-    is_admin=Column(Boolean,default=False)#admin
+    is_admin=Column(Boolean, nullable=False, default=False, server_default="0")#admin
 
 #ürün modeli
 class Urun(Base):

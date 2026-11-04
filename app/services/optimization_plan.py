@@ -1,5 +1,6 @@
 from pathlib import Path
 import logging
+import math
 import re
 from datetime import date
 
@@ -9,6 +10,7 @@ import pulp
 from app.services.profit_service import kar_hesaplama_son
 from app.services.risk import risk_hesapla
 from app.services.product_catalog import URUN_MEVSIMLERI
+from app.services.water_service import estimate_water
 
 logger = logging.getLogger(__name__)
 
@@ -152,12 +154,21 @@ def add_risk(db, product_name, district, season, area):
 
 
 def build_profit_data(db, suitable_products, district, season, gecmis_verimler=None, ek_maliyet_donum=0):
+    return build_profit_data_with_water(
+        db, suitable_products, district, season, gecmis_verimler,
+        ek_maliyet_donum, "damla",
+    )
+
+
+def build_profit_data_with_water(
+    db, suitable_products, district, season, gecmis_verimler=None,
+    ek_maliyet_donum=0, sulama_yontemi="damla",
+):
     product_rows = (
         suitable_products[["district", "product_name", "quota"]]
         .drop_duplicates(subset=["district", "product_name"])
         .reset_index(drop=True)
     )
-
     rows = []
     for _, row in product_rows.iterrows():
         product_name = row["product_name"]
@@ -172,13 +183,20 @@ def build_profit_data(db, suitable_products, district, season, gecmis_verimler=N
                 gecmis_verimler=gecmis_verimler,
                 ek_maliyet_donum=ek_maliyet_donum,
             )
+            water = estimate_water(product_name, season, sulama_yontemi)
+            water_per_decare = float(water["water_m3_per_decare"])
+            if not math.isfinite(water_per_decare) or water_per_decare <= 0:
+                raise ValueError("ürün için geçerli su ihtiyacı bulunamadı")
+            water_assumptions = list(water.get("assumptions", []))
         except Exception as error:
             logger.warning(
                 "Kar hesabi basarisiz oldu, urun planin disinda birakildi: "
                 "district=%s product=%s season=%s error=%s",
                 district, product_name, season, error,
             )
-            continue
+            raise ValueError(
+                f"{product_name} için su ihtiyacı hesaplanamadı: {error}"
+            ) from error
 
         rows.append(
             {
@@ -194,6 +212,8 @@ def build_profit_data(db, suitable_products, district, season, gecmis_verimler=N
                 "revenue_per_decare": float(profit_result["tahmini_gelir"]),
                 "cost_per_decare": float(profit_result["toplam_gider"]),
                 "predicted_price": float(profit_result["tahmini_fiyat"]),
+                "water_per_decare_m3": water_per_decare,
+                "water_assumptions": water_assumptions,
             }
         )
 
@@ -235,7 +255,15 @@ def build_risk_data(db, profit_data, district, season):
     return pd.DataFrame(risk_rows)
 
 
-def add_final_score(data, strateji="dengeli"):
+def _normalize(values):
+    minimum = values.min()
+    maximum = values.max()
+    if maximum == minimum:
+        return values * 0 + 100
+    return (values - minimum) / (maximum - minimum) * 100
+
+
+def add_final_score(data, strateji="dengeli", optimizasyon_modu="dengeli"):
     if strateji not in STRATEJILER:
         raise ValueError(f"Gecersiz strateji: {strateji}")
 
@@ -255,23 +283,37 @@ def add_final_score(data, strateji="dengeli"):
         )
 
     data["safety_score"] = 100 - data["risk_score"]
-    data["final_score"] = (
-        data["profit_score"] * PROFIT_WEIGHT
-        + data["safety_score"] * RISK_WEIGHT
-    ).round(2)
+    if optimizasyon_modu == "dengeli":
+        data["final_score"] = (
+            data["profit_score"] * PROFIT_WEIGHT
+            + data["safety_score"] * RISK_WEIGHT
+        ).round(2)
+    elif optimizasyon_modu == "su_tasarruflu":
+        data["profit_per_m3"] = data[profit_column] / data["water_per_decare_m3"]
+        data["profit_per_m3"] = data["profit_per_m3"].replace([float("inf"), -float("inf")], 0).fillna(0)
+        data["profit_score"] = _normalize(data[profit_column])
+        data["profit_per_m3_score"] = _normalize(data["profit_per_m3"])
+        data["final_score"] = (
+            data["profit_score"] * 0.55
+            + data["safety_score"] * 0.25
+            + data["profit_per_m3_score"] * 0.20
+        ).round(2)
+    else:
+        raise ValueError(f"Gecersiz optimizasyon modu: {optimizasyon_modu}")
 
     return data
 
 
 def build_decision_data(db, suitable_products, district, season, strateji="dengeli", gecmis_verimler=None,
-                        ek_maliyet_donum=0):
-    profit_data = build_profit_data(
+                        ek_maliyet_donum=0, sulama_yontemi="damla", optimizasyon_modu="dengeli"):
+    profit_data = build_profit_data_with_water(
         db=db,
         suitable_products=suitable_products,
         district=district,
         season=season,
         gecmis_verimler=gecmis_verimler,
         ek_maliyet_donum=ek_maliyet_donum,
+        sulama_yontemi=sulama_yontemi,
     )
 
     if profit_data.empty:
@@ -296,7 +338,7 @@ def build_decision_data(db, suitable_products, district, season, strateji="denge
     if data.empty:
         raise ValueError("Kar ve risk hesabi ortak olan urun bulunamadi.")
 
-    return add_final_score(data, strateji=strateji)
+    return add_final_score(data, strateji=strateji, optimizasyon_modu=optimizasyon_modu)
 
 
 def drop_unprofitable(decision_data):
@@ -316,7 +358,12 @@ def create_planting(
     strateji="dengeli",
     gecmis_verimler=None,
     ek_maliyet_donum=0,
+    su_butcesi_m3=None,
+    sulama_yontemi="damla",
+    optimizasyon_modu="dengeli",
 ):
+    if su_butcesi_m3 is not None and (not math.isfinite(su_butcesi_m3) or su_butcesi_m3 < 0):
+        raise ValueError("su_butcesi_m3 sonlu ve sıfırdan büyük/eşit olmalıdır.")
     target_year = get_target_year(season)
 
     df = load_optimization_data()
@@ -334,6 +381,8 @@ def create_planting(
         strateji=strateji,
         gecmis_verimler=gecmis_verimler,
         ek_maliyet_donum=ek_maliyet_donum,
+        sulama_yontemi=sulama_yontemi,
+        optimizasyon_modu=optimizasyon_modu,
     )
 
     decision_data = drop_unprofitable(decision_data)
@@ -377,6 +426,14 @@ def create_planting(
                 area_vars[product_name] <= row["quota"],
                 f"quota_{safe_name(product_name)}",
             )
+    if su_butcesi_m3 is not None:
+        model += (
+            pulp.lpSum(
+                area_vars[r["product_name"]] * r["water_per_decare_m3"]
+                for _, r in decision_data.iterrows()
+            ) <= su_butcesi_m3,
+            "total_water_budget_constraint",
+        )
 
     status = model.solve(pulp.PULP_CBC_CMD(msg=False))
 
@@ -386,7 +443,8 @@ def create_planting(
     result_rows = []
     for _, row in decision_data.iterrows():
         product_name = row["product_name"]
-        planted_area = area_vars[product_name].value()
+        raw_planted_area = area_vars[product_name].value()
+        planted_area = math.floor((raw_planted_area or 0) * 100) / 100
 
         if planted_area is None or planted_area <= 0:
             continue
@@ -414,7 +472,7 @@ def create_planting(
                 "target_year": target_year,
                 "season": season,
                 "product_name": product_name,
-                "recommended_area": round(planted_area, 2),
+                "recommended_area": planted_area,
                 "quota": None if pd.isna(row.get("quota")) else float(row["quota"]),
                 "predicted_price": round(float(profit_result["tahmini_fiyat"]), 2),
                 "estimated_production": round(float(profit_result["tahmini_uretim"]), 2),
@@ -425,6 +483,14 @@ def create_planting(
                 "estimated_profit": round(float(profit_result["net_kar"]), 2),
                 "estimated_profit_low": profit_result["net_kar_dusuk"],
                 "estimated_profit_high": profit_result["net_kar_yuksek"],
+                "water_per_decare_m3": round(float(row["water_per_decare_m3"]), 4),
+                "estimated_water_m3": round(float(planted_area * row["water_per_decare_m3"]), 4),
+                "water_efficiency_tl_m3": round(
+                    float(profit_result["net_kar"])
+                    / float(planted_area * row["water_per_decare_m3"]),
+                    4,
+                ),
+                "water_assumptions": row["water_assumptions"],
                 "breakeven_price": profit_result["basabas_fiyati"],
                 "loss_probability": profit_result["zarar_olasiligi"],
                 "interval_coverage": profit_result["aralik_isabeti"],
@@ -443,7 +509,8 @@ def create_planting(
         )
 
     result = pd.DataFrame(result_rows)
-    result = result.sort_values(by="final_score", ascending=False).reset_index(drop=True)
+    if not result.empty:
+        result = result.sort_values(by="final_score", ascending=False).reset_index(drop=True)
 
     return result.to_dict(orient="records")
 
@@ -456,6 +523,9 @@ def create_plan_for_user_fields(
     strateji="dengeli",
     gecmis_verimler=None,
     ek_maliyet_donum=0,
+    su_butcesi_m3=None,
+    sulama_yontemi="damla",
+    optimizasyon_modu="dengeli",
 ):
     all_plans = []
     target_year = get_target_year(season)
@@ -475,6 +545,9 @@ def create_plan_for_user_fields(
                 strateji=strateji,
                 gecmis_verimler=gecmis_verimler,
                 ek_maliyet_donum=ek_maliyet_donum,
+                su_butcesi_m3=su_butcesi_m3,
+                sulama_yontemi=sulama_yontemi,
+                optimizasyon_modu=optimizasyon_modu,
             )
 
             all_plans.append(
@@ -484,7 +557,10 @@ def create_plan_for_user_fields(
                     "total_area": total_area,
                     "target_year": target_year,
                     "strategy": strateji,
+                    "optimization_mode": optimizasyon_modu,
                     "success": True,
+                    "estimated_water_m3": round(sum(row["estimated_water_m3"] for row in plan), 4),
+                    "water_budget_m3": su_butcesi_m3,
                     # kota ve karlilik kisitlari yuzunden ekilmesi onerilmeyen alan
                     "unallocated_area": round(total_area - sum(row["recommended_area"] for row in plan), 2),
                     "plan": plan,
@@ -499,6 +575,9 @@ def create_plan_for_user_fields(
                     "total_area": total_area,
                     "target_year": target_year,
                     "success": False,
+                    "optimization_mode": optimizasyon_modu,
+                    "estimated_water_m3": 0.0,
+                    "water_budget_m3": su_butcesi_m3,
                     "error": str(error),
                     "plan": [],
                 }

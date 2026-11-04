@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "../App.css";
-import { aktifUrunleriGetir, URUN_GORUNEN_ADLAR } from "../constants/urunler";
-import { authFetch } from "../api";
+import { URUN_GORUNEN_ADLAR } from "../constants/urunler";
+import { API_URL, authFetch } from "../api";
 import { tl, yuzde } from "../belirsizlik";
+import { formatWaterValue, parseWaterBudget, summarizeWaterPlan, waterAssumptionText } from "../water";
 
 const ILCELER = ["Bayındır", "Bergama", "Menderes", "Tire", "Torbalı", "Ödemiş"];
 const SEZONLAR = ["İlkbahar", "Yaz", "Sonbahar", "Kış"];
@@ -25,10 +26,24 @@ function Recommendations() {
   const [urunler, setUrunler] = useState([]);
   const [strateji, setStrateji] = useState("dengeli");
   const [ekMaliyet, setEkMaliyet] = useState("");
+  const [suButcesi, setSuButcesi] = useState("");
+  const [sulamaYontemi, setSulamaYontemi] = useState("damla");
+  const [optimizasyonModu, setOptimizasyonModu] = useState("dengeli");
+  const [karsilastirma, setKarsilastirma] = useState(null);
+  const istekSurumu = useRef(0);
+
+  const girdileriDegistir = (guncelle) => {
+    istekSurumu.current += 1;
+    setSonuc(null);
+    setKarsilastirma(null);
+    setHata("");
+    setBasariMesaji("");
+    guncelle();
+  };
 
   useEffect(() => {
     if (aktifKullanici?.id) {
-      authFetch(`http://localhost:8000/tarla/liste`)
+      authFetch(`${API_URL}/tarla/liste`)
         .then((res) => res.json())
         .then((data) => setTarlalar(Array.isArray(data) ? data : []))
         .catch(() => setTarlalar([]));
@@ -36,17 +51,22 @@ function Recommendations() {
   }, [aktifKullanici?.id]);
 
   useEffect(() => {
-  aktifUrunleriGetir().then(setUrunler);
+    authFetch(`${API_URL}/urun/liste`)
+      .then((res) => res.json())
+      .then((data) => setUrunler(Array.isArray(data)
+        ? data.filter((urun) => urun.aktif).map((urun) => urun.urun_adi) : []))
+      .catch(() => setUrunler([]));
+    return () => { istekSurumu.current += 1; };
   }, []);
 
   const tarlaSec = (tarlaId) => {
-    setSecilenTarla(tarlaId);
+    girdileriDegistir(() => setSecilenTarla(tarlaId));
   };
 
   const urunSecimiDegistir = (urun) => {
-    setSecilenUrunler((prev) =>
+    girdileriDegistir(() => setSecilenUrunler((prev) =>
       prev.includes(urun) ? prev.filter((u) => u !== urun) : [...prev, urun]
-    );
+    ));
   };
 
   const uygunTarlalar = tarlalar.filter((t) => t.bos_donum > 0);
@@ -56,7 +76,7 @@ function Recommendations() {
     : 0;
 
   const handleManuelChange = (e) => {
-    setManuelForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
+    girdileriDegistir(() => setManuelForm((prev) => ({ ...prev, [e.target.name]: e.target.value })));
   };
 
   const ilkPlan = sonuc?.[0];
@@ -70,16 +90,22 @@ function Recommendations() {
     ? urunListesi.reduce((toplam, urun) => toplam + urun.estimated_profit_low, 0)
     : null;
   const maliyetlerEksik = urunListesi.some((u) => u.costs_incomplete);
+  const suOzeti = summarizeWaterPlan(ilkPlan);
+  const karsilastirmaTam = karsilastirma && [
+    karsilastirma.dengeli.water, karsilastirma.dengeli.profit,
+    karsilastirma.suTasarruflu.water, karsilastirma.suTasarruflu.profit,
+  ].every(Number.isFinite);
 
   const ekimiOnayla = async () => {
-    if (!ilkPlan || !ilkPlan.success || urunListesi.length === 0) return;
+    if (yukleniyor || onaylaniyor || !ilkPlan || !ilkPlan.success || urunListesi.length === 0) return;
+    const surum = istekSurumu.current;
 
     setOnaylaniyor(true);
     setHata("");
     setBasariMesaji("");
 
     try {
-      const res = await authFetch("http://localhost:8000/oneri/onayla", {
+      const res = await authFetch(`${API_URL}/oneri/onayla`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -96,11 +122,13 @@ function Recommendations() {
       if (res.ok) {
         setBasariMesaji("✅ Ekim planı başarıyla onaylandı. Tarlanız güncellendi.");
         // Tarla listesini tazele (boş dönüm güncellensin)
-        authFetch(`http://localhost:8000/tarla/liste`)
+        authFetch(`${API_URL}/tarla/liste`)
           .then((r) => r.json())
           .then((d) => setTarlalar(Array.isArray(d) ? d : []));
         setTimeout(() => {
+            if (surum !== istekSurumu.current) return;
             setSonuc(null);
+            setKarsilastirma(null);
             setBasariMesaji("");
             }, 5000);
       } else {
@@ -108,14 +136,15 @@ function Recommendations() {
           typeof data.detail === "string" ? data.detail : "Onaylanamadı.";
         setHata(mesaj);
       }
-    } catch (err) {
+    } catch {
       setHata("Sunucuya bağlanılamadı.");
     } finally {
       setOnaylaniyor(false);
     }
   };
 
-  const oneriAl = async () => {
+  const oneriAl = async (karsilastir = false) => {
+    if (yukleniyor || onaylaniyor) return;
     setHata("");
 
     if (!sezon) {
@@ -123,65 +152,92 @@ function Recommendations() {
       return;
     }
 
-    let endpoint = "";
+    let suButcesiM3;
+    try {
+      suButcesiM3 = parseWaterBudget(suButcesi);
+    } catch (error) {
+      setHata(error.message);
+      return;
+    }
+
+    let endpoint;
     let payload = {
-      mod,
       sezon,
       secilen_urunler: secilenUrunler.length > 0 ? secilenUrunler : null,
-      kullanici_id: aktifKullanici ? aktifKullanici.id : null,
+      strateji,
+      ek_maliyet_donum: Number(ekMaliyet) || 0,
+      su_butcesi_m3: suButcesiM3,
+      sulama_yontemi: sulamaYontemi,
+      optimizasyon_modu: optimizasyonModu,
     };
 
     if (mod === "tarlalarim") {
-      if (!secilenTarla) {
+      if (!aktifKullanici || !secilenTarla) {
         setHata("Lütfen bir tarla seç.");
         return;
       }
-      endpoint = "http://localhost:8000/oneri/tarla_getir";
+      endpoint = `${API_URL}/oneri/tarla_getir`;
 
       payload = {
+        ...payload,
         kullanici_id: aktifKullanici.id,
         tarla_id: secilenTarla,
-        sezon,
         bos_donum: toplamDonum,
-        secilen_urunler: secilenUrunler.length > 0 ? secilenUrunler : null,
-        strateji,
-        ek_maliyet_donum: Number(ekMaliyet) || 0,
       };
     } else {
       if (!manuelForm.ilce || !manuelForm.donum) {
         setHata("Lütfen ilçe ve dönüm gir.");
         return;
       }
-      endpoint = "http://localhost:8000/oneri/manual";
+      endpoint = `${API_URL}/oneri/manual`;
 
       payload = {
+        ...payload,
         ilce_adi: manuelForm.ilce,
         donum: Number(manuelForm.donum),
-        sezon,
-        secilen_urunler: secilenUrunler.length > 0 ? secilenUrunler : null,
-        strateji,
-        ek_maliyet_donum: Number(ekMaliyet) || 0,
       };
     }
 
     setYukleniyor(true);
     setSonuc(null);
-    try {
+    setKarsilastirma(null);
+    setBasariMesaji("");
+    const surum = ++istekSurumu.current;
+    const planiGetir = async (istek) => {
       const res = await authFetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(istek),
       });
       const data = await res.json();
-      if (res.ok) {
-        setSonuc(data);
+      if (!res.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Öneri alınamadı.");
+      }
+      if (!Array.isArray(data) || data.length !== 1 || !data[0]?.success || !Array.isArray(data[0].plan)) {
+        throw new Error(typeof data?.[0]?.error === "string" ? data[0].error : "Geçerli bir ekim planı alınamadı.");
+      }
+      return data;
+    };
+    try {
+      if (karsilastir) {
+        const cevaplar = await Promise.allSettled([
+          planiGetir({ ...payload, optimizasyon_modu: "dengeli" }),
+          planiGetir({ ...payload, optimizasyon_modu: "su_tasarruflu" }),
+        ]);
+        if (surum !== istekSurumu.current) return;
+        const basarisiz = cevaplar.find((cevap) => cevap.status === "rejected");
+        if (basarisiz) throw new Error(`Karşılaştırma tamamlanamadı: ${basarisiz.reason.message}`);
+        const dengeli = cevaplar[0].value;
+        const suTasarruflu = cevaplar[1].value;
+        setKarsilastirma({ dengeli: summarizeWaterPlan(dengeli[0]), suTasarruflu: summarizeWaterPlan(suTasarruflu[0]) });
+        setSonuc(optimizasyonModu === "su_tasarruflu" ? suTasarruflu : dengeli);
       } else {
-        const mesaj =
-          typeof data.detail === "string" ? data.detail : "Öneri alınamadı";
-        setHata(mesaj);
+        const data = await planiGetir(payload);
+        if (surum !== istekSurumu.current) return;
+        setSonuc(data);
       }
     } catch (err) {
-      setHata("Sunucuya bağlanılamadı.");
+      if (surum === istekSurumu.current) setHata(err.message || "Sunucuya bağlanılamadı.");
     } finally {
       setYukleniyor(false);
     }
@@ -202,14 +258,14 @@ function Recommendations() {
             <button
               type="button"
               className={mod === "tarlalarim" ? "active" : ""}
-              onClick={() => setMod("tarlalarim")}
+              onClick={() => girdileriDegistir(() => setMod("tarlalarim"))}
             >
               Tarlalarımdan Seç
             </button>
             <button
               type="button"
               className={mod === "manuel" ? "active" : ""}
-              onClick={() => setMod("manuel")}
+              onClick={() => girdileriDegistir(() => setMod("manuel"))}
             >
               Kendim Girmek İstiyorum
             </button>
@@ -275,7 +331,7 @@ function Recommendations() {
 
           <div className="field">
             <label>Sezon</label>
-            <select value={sezon} onChange={(e) => setSezon(e.target.value)}>
+            <select value={sezon} onChange={(e) => girdileriDegistir(() => setSezon(e.target.value))}>
               <option value="">Sezon Seç</option>
               {SEZONLAR.map((s) => (
                 <option key={s} value={s}>{s}</option>
@@ -293,9 +349,9 @@ function Recommendations() {
 
       if (!urun) return;
 
-      setSecilenUrunler((prev) =>
+      girdileriDegistir(() => setSecilenUrunler((prev) =>
         prev.includes(urun) ? prev : [...prev, urun]
-      );
+      ));
     }}
   >
     <option value="">Ürün Seç</option>
@@ -332,14 +388,14 @@ function Recommendations() {
               <button
                 type="button"
                 className={strateji === "dengeli" ? "active" : ""}
-                onClick={() => setStrateji("dengeli")}
+                onClick={() => girdileriDegistir(() => setStrateji("dengeli"))}
               >
                 Dengeli
               </button>
               <button
                 type="button"
                 className={strateji === "temkinli" ? "active" : ""}
-                onClick={() => setStrateji("temkinli")}
+                onClick={() => girdileriDegistir(() => setStrateji("temkinli"))}
               >
                 Temkinli
               </button>
@@ -352,21 +408,62 @@ function Recommendations() {
           </div>
 
           <div className="field">
+            <label htmlFor="su-butcesi">Su bütçesi (m³)</label>
+            <input
+              id="su-butcesi"
+              type="text"
+              inputMode="decimal"
+              aria-describedby="su-butcesi-aciklama"
+              placeholder="İsteğe bağlı, örn. 5000"
+              value={suButcesi}
+              onChange={(e) => girdileriDegistir(() => setSuButcesi(e.target.value))}
+            />
+            <p id="su-butcesi-aciklama" className="hint">
+              Seçilen alanın sezonluk toplam bütçesi. Boş bırakırsanız su bütçesi sınırı uygulanmaz; 0 geçerli bir sınırdır.
+            </p>
+          </div>
+
+          <div className="field">
+            <label htmlFor="sulama-yontemi">Sulama yöntemi</label>
+            <select id="sulama-yontemi" value={sulamaYontemi}
+              onChange={(e) => girdileriDegistir(() => setSulamaYontemi(e.target.value))}>
+              <option value="damla">Damla</option>
+              <option value="yagmurlama">Yağmurlama</option>
+              <option value="salma">Salma</option>
+            </select>
+          </div>
+
+          <div className="field">
+            <label htmlFor="optimizasyon-modu">Optimizasyon modu</label>
+            <select id="optimizasyon-modu" value={optimizasyonModu}
+              onChange={(e) => girdileriDegistir(() => setOptimizasyonModu(e.target.value))}>
+              <option value="dengeli">Dengeli</option>
+              <option value="su_tasarruflu">Su tasarruflu</option>
+            </select>
+            <p className="hint">Planlama yaklaşımı (Dengeli / Temkinli) ayrıca korunur.</p>
+          </div>
+
+          <div className="field">
             <label>Diğer Giderler (₺/dönüm)</label>
             <input
               type="number"
               min="0"
               placeholder="İşçilik, tohum, sulama, kira… bilinmiyorsa boş bırak"
               value={ekMaliyet}
-              onChange={(e) => setEkMaliyet(e.target.value)}
+              onChange={(e) => girdileriDegistir(() => setEkMaliyet(e.target.value))}
             />
           </div>
 
           {hata && <div className="form-message error">{hata}</div>}
 
-          <button className="run-btn" onClick={oneriAl} disabled={yukleniyor}>
+          <button type="button" className="run-btn" onClick={() => oneriAl()} disabled={yukleniyor || onaylaniyor}>
             {yukleniyor ? "Hesaplanıyor..." : "Öneri Al"}
           </button>
+          <button type="button" className="run-btn" style={{ marginTop: 12 }}
+            onClick={() => oneriAl(true)} disabled={yukleniyor || onaylaniyor}>
+            Modları Karşılaştır (isteğe bağlı)
+          </button>
+          <p className="hint">Karşılaştırma, aynı girdilerle her mod için bir kez hesaplama yapar.</p>
         </div>
 
         <div className="results-column">
@@ -377,6 +474,31 @@ function Recommendations() {
                 )}
           {sonuc ? (
             <>
+              {karsilastirma && (
+                <section className="panel" aria-label="Mod karşılaştırması">
+                  <h3>Dengeli / Su tasarruflu karşılaştırması</h3>
+                  <p>Dengeli: {formatWaterValue(karsilastirma.dengeli.water, "m³")} su,
+                    {" "}{formatWaterValue(karsilastirma.dengeli.profit, "TL")} tahmini kâr.</p>
+                  <p>Su tasarruflu: {formatWaterValue(karsilastirma.suTasarruflu.water, "m³")} su,
+                    {" "}{formatWaterValue(karsilastirma.suTasarruflu.profit, "TL")} tahmini kâr.</p>
+                  {karsilastirmaTam ? (
+                    <>
+                      <p className="hint">Tahmini fark = Su tasarruflu − Dengeli; negatif değer azalmayı gösterir.</p>
+                      <div className="result-row">
+                        <div className="result-card">
+                          <div className="label">Tahmini Su Farkı</div>
+                          <div className="value">{formatWaterValue(karsilastirma.suTasarruflu.water - karsilastirma.dengeli.water, "m³")}</div>
+                        </div>
+                        <div className="result-card">
+                          <div className="label">Tahmini Kâr Farkı</div>
+                          <div className="value">{formatWaterValue(karsilastirma.suTasarruflu.profit - karsilastirma.dengeli.profit, "TL")}</div>
+                        </div>
+                      </div>
+                    </>
+                  ) : <p className="hint">Su veya kâr verisi eksik olduğundan fark hesaplanamadı.</p>}
+                  <p className="hint">Aşağıdaki ekim planı seçili {optimizasyonModu === "su_tasarruflu" ? "Su tasarruflu" : "Dengeli"} moduna aittir.</p>
+                </section>
+              )}
               {ilkPlan && !ilkPlan.success && (
                 <div className="form-message error">{ilkPlan.error}</div>
               )}
@@ -387,6 +509,15 @@ function Recommendations() {
                     <div className="Meta">Tahmini Üretim:{" "}{(o.estimated_production ?? 0).toLocaleString("tr-TR")}{" "}ton</div>
                     <div className="Meta">Tahmini Gelir:{" "}{(o.estimated_revenue ?? 0).toLocaleString("tr-TR")} ₺</div>
                     <div className="Meta">Tahmini Kâr:{" "}{(o.estimated_profit ?? 0).toLocaleString("tr-TR")} ₺</div>
+                    <div className="Meta">Dönüm Başına Tahmini Su: {formatWaterValue(o.water_per_decare_m3, "m³/dönüm")}</div>
+                    <div className="Meta">Tahmini Toplam Su: {formatWaterValue(o.estimated_water_m3, "m³")}</div>
+                    <div className="Meta">Tahmini Su Başına Kâr: {formatWaterValue(o.water_efficiency_tl_m3, "TL/m³")}</div>
+                    {waterAssumptionText(o.water_assumptions) && (
+                      <details>
+                        <summary>Su hesabı varsayımları</summary>
+                        <p className="hint">{waterAssumptionText(o.water_assumptions)}</p>
+                      </details>
+                    )}
                     {o.estimated_profit_low !== null && (
                       <div className="Meta">Kötü senaryoda kâr: {tl(o.estimated_profit_low)}</div>
                     )}
@@ -407,6 +538,24 @@ function Recommendations() {
                 </div>
               </div>
 
+              <div className="result-row">
+                <div className="result-card">
+                  <div className="label">Tahmini Toplam Su</div>
+                  <div className="value">{formatWaterValue(suOzeti.water, "m³")}</div>
+                  <div className="hint">Su bütçesi: {ilkPlan?.water_budget_m3 === null
+                    ? "Belirtilmedi" : formatWaterValue(ilkPlan?.water_budget_m3, "m³")}</div>
+                </div>
+                <div className="result-card">
+                  <div className="label">Tahmini Su Başına Kâr</div>
+                  <div className="value">{formatWaterValue(suOzeti.efficiency, "TL/m³")}</div>
+                  <div className="hint">Toplam tahmini kâr / toplam tahmini su</div>
+                </div>
+              </div>
+              <p className="hint">
+                Su değerleri, ürün ve sulama yöntemi varsayımlarına dayalı geçici tahminlerdir;
+                ölçülmüş tüketim veya tasarruf değildir.
+              </p>
+
               {toplamKarDusuk !== null && (
                 <div className="form-message info">
                   Fiyatlar kötü giderse toplam kâr {tl(toplamKarDusuk)} olur.
@@ -416,7 +565,7 @@ function Recommendations() {
               )}
               {ilkPlan?.unallocated_area > 0 && (
                 <div className="form-message info">
-                  {ilkPlan.unallocated_area} dönüm için kârlı ve kotası uygun ürün bulunamadı; boş bırakılması önerilir.
+                  {ilkPlan.unallocated_area} dönüm plan kısıtları nedeniyle boş bırakılıyor (kârlılık, kota veya su bütçesi).
                 </div>
               )}
               {maliyetlerEksik && (
@@ -433,7 +582,7 @@ function Recommendations() {
                 <button
                   className="run-btn"
                   onClick={ekimiOnayla}
-                  disabled={onaylaniyor}
+                  disabled={onaylaniyor || yukleniyor}
                   style={{ marginTop: 12 }}
                 >
                   {onaylaniyor ? "Kaydediliyor..." : "Bu Ekimi Onaylıyorum"}
